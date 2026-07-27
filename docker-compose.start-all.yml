@@ -162,6 +162,27 @@ services:
     networks:
       - llm-proxy-net
 
+  proxy-catalog:
+    build:
+      context: ./proxy_catalog
+      args:
+        USE_CN_MIRROR: ${CATALOG_USE_CN_MIRROR:-1}
+        PIP_INDEX_URL: ${CATALOG_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    container_name: proxy-catalog
+    ports:
+      - "${CATALOG_PORT:-18010}:8000"
+    environment:
+      CATALOG_PUBLIC_HOST: ${CATALOG_PUBLIC_HOST:-127.0.0.1}
+      CATALOG_PROBE_TIMEOUT: ${CATALOG_PROBE_TIMEOUT:-2.0}
+      DEEPSEEK_PROXY_API_KEY: ${DEEPSEEK_PROXY_API_KEY:-local-secret}
+      KIMI_PROXY_API_KEY: ${KIMI_PROXY_API_KEY:-local-secret}
+      STEPFUN_PROXY_API_KEY: ${STEPFUN_PROXY_API_KEY:-local-secret}
+      QWEN_PROXY_API_KEY: ${QWEN_PROXY_API_KEY:-local-secret}
+      CURSOR_OPENAI_BRIDGE_API_KEY: ${CURSOR_OPENAI_BRIDGE_API_KEY:-}
+    restart: unless-stopped
+    networks:
+      - llm-proxy-net
+
 networks:
   llm-proxy-net:
     name: llm_site_proxy_net
