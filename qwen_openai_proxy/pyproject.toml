@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwen-openai-proxy"
+version = "0.1.0"
+description = "OpenAI-compatible proxy for chat.qwen.ai with image and video generation."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "playwright==1.60.0",
+    "python-multipart>=0.0.6",
+    "uvicorn>=0.29",
+]
+
+[tool.setuptools]
+py-modules = [
+    "app",
+    "browser_client",
+    "client",
+    "curl_cookies",
+    "inject_bearer_token",
+    "main",
+    "media_input",
+    "save_storage_state",
+    "storage_state",
+    "verify_storage_state",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["profile*", "secrets*", "tests*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "anyio>=4",
+]

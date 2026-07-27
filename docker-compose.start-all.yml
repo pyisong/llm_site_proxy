@@ -1,0 +1,168 @@
+services:
+  deepseek-openai-proxy:
+    build:
+      context: ./deepseek_openai_proxy
+      args:
+        USE_CN_MIRROR: ${DEEPSEEK_USE_CN_MIRROR:-1}
+        BASE_IMAGE: ${DEEPSEEK_BASE_IMAGE:-mcr.azure.cn/playwright/python:v1.60.0-noble}
+        PIP_INDEX_URL: ${DEEPSEEK_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        APT_MIRROR: ${DEEPSEEK_APT_MIRROR:-mirrors.aliyun.com}
+    container_name: deepseek-openai-proxy
+    ports:
+      - "${DEEPSEEK_PROXY_PORT:-18002}:8000"
+    environment:
+      DEEPSEEK_BACKEND: ${DEEPSEEK_BACKEND:-browser}
+      DEEPSEEK_PROXY_API_KEY: ${DEEPSEEK_PROXY_API_KEY:-local-secret}
+      DEEPSEEK_BROWSER_PROFILE: /data/profile
+      DEEPSEEK_BROWSER_HEADLESS: "1"
+      DEEPSEEK_STORAGE_STATE_FILE: /run/secrets/deepseek_storage.json
+      DEEPSEEK_BROWSER_TIMEOUT: "600"
+      DEEPSEEK_BROWSER_START_TIMEOUT: "600"
+      DEEPSEEK_NEW_CHAT_PER_REQUEST: "1"
+      DEEPSEEK_LOG_LEVEL: ${DEEPSEEK_LOG_LEVEL:-INFO}
+      DEEPSEEK_LOG_MAX_CHARS: ${DEEPSEEK_LOG_MAX_CHARS:-500}
+    volumes:
+      - ./deepseek_openai_proxy/secrets:/run/secrets:ro
+    restart: unless-stopped
+    networks:
+      - llm-proxy-net
+
+  kimi-openai-proxy:
+    build:
+      context: ./kimi_openai_proxy
+      args:
+        USE_CN_MIRROR: ${KIMI_USE_CN_MIRROR:-1}
+        BASE_IMAGE: ${KIMI_BASE_IMAGE:-mcr.azure.cn/playwright/python:v1.60.0-noble}
+        PIP_INDEX_URL: ${KIMI_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        APT_MIRROR: ${KIMI_APT_MIRROR:-mirrors.aliyun.com}
+    container_name: kimi-openai-proxy
+    ports:
+      - "${KIMI_PROXY_PORT:-18003}:8000"
+    environment:
+      KIMI_BACKEND: ${KIMI_BACKEND:-browser}
+      KIMI_PROXY_API_KEY: ${KIMI_PROXY_API_KEY:-local-secret}
+      KIMI_BROWSER_PROFILE: /data/profile
+      KIMI_BROWSER_HEADLESS: "1"
+      KIMI_STORAGE_STATE_FILE: /run/secrets/kimi_storage.json
+      KIMI_BROWSER_TIMEOUT: "600"
+      KIMI_BROWSER_START_TIMEOUT: "600"
+      KIMI_BUSY_MAX_ATTEMPTS: "5"
+      KIMI_BUSY_RETRY_WAIT_SECONDS: "60"
+      KIMI_BUSY_RETRY_BACKOFF: "1.5"
+      KIMI_BUSY_RETRY_WAIT_MAX_SECONDS: "180"
+      KIMI_NEW_CHAT_PER_REQUEST: "1"
+      KIMI_LOG_LEVEL: ${KIMI_LOG_LEVEL:-INFO}
+      KIMI_LOG_MAX_CHARS: ${KIMI_LOG_MAX_CHARS:-500}
+    volumes:
+      - ./kimi_openai_proxy/secrets:/run/secrets:ro
+    restart: unless-stopped
+    networks:
+      - llm-proxy-net
+
+  stepfun-openai-proxy:
+    build:
+      context: ./stepfun_openai_proxy
+      args:
+        USE_CN_MIRROR: ${STEPFUN_USE_CN_MIRROR:-1}
+        BASE_IMAGE: ${STEPFUN_BASE_IMAGE:-mcr.azure.cn/playwright/python:v1.60.0-noble}
+        PIP_INDEX_URL: ${STEPFUN_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        APT_MIRROR: ${STEPFUN_APT_MIRROR:-mirrors.aliyun.com}
+    container_name: stepfun-openai-proxy
+    ports:
+      - "${STEPFUN_PROXY_PORT:-18004}:8000"
+    environment:
+      STEPFUN_BACKEND: ${STEPFUN_BACKEND:-browser}
+      STEPFUN_PROXY_API_KEY: ${STEPFUN_PROXY_API_KEY:-local-secret}
+      STEPFUN_BROWSER_PROFILE: /data/profile
+      STEPFUN_BROWSER_HEADLESS: "1"
+      STEPFUN_STORAGE_STATE_FILE: /run/secrets/stepfun_storage.json
+      STEPFUN_BROWSER_TIMEOUT: "600"
+      STEPFUN_BROWSER_START_TIMEOUT: "600"
+      STEPFUN_NEW_CHAT_PER_REQUEST: "1"
+      STEPFUN_LOG_LEVEL: ${STEPFUN_LOG_LEVEL:-INFO}
+      STEPFUN_LOG_MAX_CHARS: ${STEPFUN_LOG_MAX_CHARS:-500}
+    volumes:
+      - ./stepfun_openai_proxy/secrets:/run/secrets:ro
+    restart: unless-stopped
+    networks:
+      - llm-proxy-net
+
+  qwen-openai-proxy:
+    build:
+      context: ./qwen_openai_proxy
+      args:
+        USE_CN_MIRROR: ${QWEN_USE_CN_MIRROR:-1}
+        BASE_IMAGE: ${QWEN_BASE_IMAGE:-mcr.azure.cn/playwright/python:v1.60.0-noble}
+        PIP_INDEX_URL: ${QWEN_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        APT_MIRROR: ${QWEN_APT_MIRROR:-mirrors.aliyun.com}
+    container_name: qwen-openai-proxy
+    ports:
+      - "${QWEN_PROXY_PORT:-18005}:8000"
+    environment:
+      QWEN_BACKEND: ${QWEN_BACKEND:-browser}
+      QWEN_PROXY_API_KEY: ${QWEN_PROXY_API_KEY:-local-secret}
+      QWEN_BROWSER_PROFILE: /data/profile
+      QWEN_BROWSER_HEADLESS: "1"
+      QWEN_STORAGE_STATE_FILE: /run/secrets/qwen_storage.json
+      QWEN_BROWSER_TIMEOUT: "600"
+      QWEN_BROWSER_START_TIMEOUT: "600"
+      QWEN_IMAGE_TIMEOUT: "900"
+      QWEN_VIDEO_TIMEOUT: "1800"
+      QWEN_NEW_CHAT_PER_REQUEST: "1"
+      QWEN_LOG_LEVEL: ${QWEN_LOG_LEVEL:-INFO}
+      QWEN_LOG_MAX_CHARS: ${QWEN_LOG_MAX_CHARS:-500}
+    volumes:
+      - ./qwen_openai_proxy/secrets:/run/secrets:ro
+    restart: unless-stopped
+    networks:
+      - llm-proxy-net
+
+  azure-tts-http-api:
+    build:
+      context: ./azure_tts_http_api
+      args:
+        USE_CN_MIRROR: ${AZURE_USE_CN_MIRROR:-1}
+        BASE_IMAGE: ${AZURE_BASE_IMAGE:-mcr.azure.cn/playwright/python:v1.60.0-noble}
+        PIP_INDEX_URL: ${AZURE_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        APT_MIRROR: ${AZURE_APT_MIRROR:-mirrors.aliyun.com}
+    container_name: azure-tts-http-api
+    ports:
+      - "${AZURE_TTS_HTTP_PORT:-8787}:8787"
+    environment:
+      TTS_PROVIDER: ${TTS_PROVIDER:-site}
+      TTS_BROWSER_HEADLESS: ${TTS_BROWSER_HEADLESS:-"1"}
+    shm_size: "1gb"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - llm-proxy-net
+
+  cursor-openai-bridge:
+    build:
+      context: ./macos_cursor_automation
+      dockerfile: Dockerfile
+      args:
+        INSTALL_CURSOR: ${INSTALL_CURSOR:-1}
+    image: cursor-openai-bridge:local
+    container_name: cursor-openai-bridge
+    ports:
+      - "${CURSOR_BRIDGE_PORT:-8765}:8765"
+    env_file:
+      - ./macos_cursor_automation/.env
+    restart: unless-stopped
+    networks:
+      - llm-proxy-net
+
+networks:
+  llm-proxy-net:
+    name: llm_site_proxy_net
+

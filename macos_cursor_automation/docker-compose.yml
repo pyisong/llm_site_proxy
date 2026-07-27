@@ -1,0 +1,26 @@
+services:
+  cursor-openai-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_CURSOR: ${INSTALL_CURSOR:-1}
+    image: cursor-openai-bridge:local
+    ports:
+      - "${CURSOR_BRIDGE_PORT:-8765}:8765"
+    environment:
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+      CURSOR_OPENAI_BRIDGE_API_KEY: ${CURSOR_OPENAI_BRIDGE_API_KEY:-}
+      CURSOR_BRIDGE_LOG_LEVEL: ${CURSOR_BRIDGE_LOG_LEVEL:-INFO}
+      CURSOR_BRIDGE_LOG_MAX_CHARS: ${CURSOR_BRIDGE_LOG_MAX_CHARS:-512}
+      CURSOR_BRIDGE_MODELS_CACHE_TTL: ${CURSOR_BRIDGE_MODELS_CACHE_TTL:-60}
+      CURSOR_BRIDGE_LOG_AGENT_PROMPT: ${CURSOR_BRIDGE_LOG_AGENT_PROMPT:-0}
+      CURSOR_BRIDGE_ISOLATE_WORKSPACE: ${CURSOR_BRIDGE_ISOLATE_WORKSPACE:-1}
+    # volumes:
+      # 挂载到容器内 agent 工作区（与 -w /workspace 一致）
+      # - ${CURSOR_BRIDGE_WORKSPACE:-./workspace}:/workspace:rw
+      # 认证：优先在 .env 设置 CURSOR_API_KEY（与无头/CI 一致，与 IDE 登录会话无关）。
+      # 不推荐把宿主 ~/.local/share/cursor-agent 挂进 Linux 容器：versions 里是 darwin 二进制，会覆盖镜像内 linux agent。
+      # 若需实验性复用宿主 CLI 状态（不稳定、有泄露风险），可取消下一行注释（仅挂配置目录，勿挂 versions）：
+      # - ${HOME}/.cursor:/root/.cursor:rw
+    restart: unless-stopped

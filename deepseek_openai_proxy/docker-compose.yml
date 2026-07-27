@@ -1,0 +1,31 @@
+services:
+  deepseek-openai-proxy:
+    build:
+      context: .
+      args:
+        # 国内加速：基础镜像走 mcr.azure.cn，pip/apt 走国内源
+        # 海外环境可设 USE_CN_MIRROR=0 并改用 mcr.microsoft.com/playwright/python:v1.60.0-noble
+        USE_CN_MIRROR: "1"
+        BASE_IMAGE: mcr.azure.cn/playwright/python:v1.60.0-noble
+        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+        APT_MIRROR: mirrors.aliyun.com
+    container_name: deepseek-openai-proxy
+    ports:
+      - "18002:8000"
+    environment:
+      DEEPSEEK_BACKEND: browser
+      DEEPSEEK_PROXY_API_KEY: local-secret
+      DEEPSEEK_BROWSER_PROFILE: /data/profile
+      DEEPSEEK_BROWSER_HEADLESS: "1"
+      # curl cookie 单独使用可能仍会跳转登录页，推荐 storage state（见 README）
+      DEEPSEEK_STORAGE_STATE_FILE: /run/secrets/deepseek_storage.json
+      DEEPSEEK_BROWSER_TIMEOUT: "600"
+      DEEPSEEK_BROWSER_START_TIMEOUT: "600"
+      DEEPSEEK_NEW_CHAT_PER_REQUEST: "1"
+      DEEPSEEK_LOG_LEVEL: INFO
+      DEEPSEEK_LOG_MAX_CHARS: "500"
+    volumes:
+      - ./secrets:/run/secrets:ro
+
+volumes:
+  deepseek-browser-profile:

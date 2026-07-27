@@ -1,0 +1,9 @@
+secrets/deepseek_cookies.json
+secrets/deepseek_curl.txt
+secrets/deepseek_storage.json
+profile/
+deepseek-browser-profile-export/
+*.egg-info/
+.pytest_cache/
+__pycache__/
+*.pyc

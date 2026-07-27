@@ -1,0 +1,27 @@
+services:
+  azure-tts-http-api:
+    build:
+      context: .
+      args:
+        USE_CN_MIRROR: "1"
+        BASE_IMAGE: mcr.azure.cn/playwright/python:v1.60.0-noble
+        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+        APT_MIRROR: mirrors.aliyun.com
+    container_name: azure-tts-http-api
+    ports:
+      - "8787:8787"
+    environment:
+      TTS_PROVIDER: site
+      TTS_BROWSER_HEADLESS: "1"
+      # Azure 模式（可选）：
+      # AZURE_SPEECH_KEY: ""
+      # AZURE_SPEECH_REGION: eastasia
+      # AZURE_SPEECH_ENDPOINT: ""
+    shm_size: "1gb"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
