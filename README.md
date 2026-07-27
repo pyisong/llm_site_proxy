@@ -47,3 +47,7 @@ curl -s 'http://127.0.0.1:18010/v1/services?capability=image' | python3 -m json.
 | azure-tts-http-api | 8787 |
 
 各子目录仍可单独 `docker compose up`；生产推荐只用根目录 `docker-compose.start-all.yml`。
+
+## 忽略规则
+
+仓库根目录 `.gitignore` 已汇总各子项目规则。本地运行 `save_storage_state` 产生的 `*-browser-profile-export/`（Chromium 用户数据目录）以及 `secrets/*_storage.json`、`.env` 等不会进入 git；磁盘上仍可正常使用。
