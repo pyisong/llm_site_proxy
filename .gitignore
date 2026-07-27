@@ -1,0 +1,57 @@
+# llm_site_proxy — root ignore (merged from former per-proxy .gitignore files)
+
+# Python
+__pycache__/
+*.py[codz]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+ENV/
+
+# Env / local secrets (keep *.example tracked)
+.env
+.env.*
+!.env.example
+**/.env
+!**/.env.example
+
+# Browser login exports & persistent Chromium profiles (local only)
+*-browser-profile/
+*-browser-profile-export/
+**/profile/
+**/profile*/
+
+# Proxy secrets: real credentials; examples stay tracked
+**/secrets/*_storage.json
+**/secrets/*_cookies.json
+**/secrets/*_curl.txt
+!**/*.example
+
+# azure_tts_http_api local audio dumps
+*.mp3
+*.wav
+
+# macos_cursor_automation local runtime
+macos_cursor_automation/logs/
+macos_cursor_automation/.cursor_bridge_generated/
+macos_cursor_automation/outputs/
+macos_cursor_automation/test/
+.DS_Store
+
+# Editors / misc
+.idea/
+.vscode/
+*.log
