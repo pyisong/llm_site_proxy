@@ -133,17 +133,33 @@ Browser 模式支持在发送消息前切换 Qwen 网页模式：
 | 参数 | 可选值 | 说明 |
 | --- | --- | --- |
 | `qwen_mode` | `chat` / `image` / `video` / `deep_research` / `web_dev` | 对应网页「选择模式」菜单 |
-| `thinking` | `true` / `false` | 思考模式（预留） |
+| `response_mode` | `auto` / `thinking` / `fast` | 对应输入框左侧「自动 / 思考 / 快速」下拉（仅聊天模式） |
+| `thinking` | `true` / `false` | 兼容字段：`true` 等价于 `response_mode: thinking` |
 | `new_chat` | `true` / `false` | 是否新建对话 |
 
-别名：`t2i` → `image`，`t2v` → `video`，`生成图像` → `image`，`创建视频` → `video`。
+别名：`t2i` → `image`，`t2v` → `video`，`生成图像` → `image`，`创建视频` → `video`；`快速` / `quick` → `fast`，`思考` / `think` → `thinking`，`自动` → `auto`。
 
 优先级：
 
-1. 请求体 `qwen_mode`
-2. 请求体 `metadata.qwen_mode`
-3. HTTP 头 `X-Qwen-Mode`
-4. 环境变量 `QWEN_DEFAULT_MODE`
+1. 请求体 `qwen_mode` / `response_mode`
+2. 请求体 `metadata.qwen_mode` / `metadata.response_mode`
+3. HTTP 头 `X-Qwen-Mode` / `X-Qwen-Response-Mode`（`X-Qwen-Thinking` 仍可作为响应模式别名）
+4. 环境变量 `QWEN_DEFAULT_MODE` / `QWEN_RESPONSE_MODE`
+
+### 思考模式示例
+
+```bash
+curl http://10.1.10.113:18005/v1/chat/completions \
+  -H "Authorization: Bearer local-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-chat-web",
+    "response_mode": "thinking",
+    "messages": [{"role": "user", "content": "分析这篇文章的结构问题"}]
+  }'
+```
+
+兼容写法：`"thinking": true` 等价于 `"response_mode": "thinking"`。
 
 ### 通过聊天接口生图
 

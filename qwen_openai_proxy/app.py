@@ -260,6 +260,82 @@ def resolve_qwen_mode(
     return parsed_default or "chat"
 
 
+def _parse_response_mode(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "thinking" if value else None
+    if not isinstance(value, str):
+        raise ValueError(f"invalid Qwen response mode: {value!r}")
+    normalized = value.strip().lower()
+    if normalized in {"", "default"}:
+        return None
+    aliases = {
+        "auto": "auto",
+        "automatic": "auto",
+        "自动": "auto",
+        "自动模式": "auto",
+        "thinking": "thinking",
+        "think": "thinking",
+        "reasoning": "thinking",
+        "reason": "thinking",
+        "思考": "thinking",
+        "思考模式": "thinking",
+        "fast": "fast",
+        "quick": "fast",
+        "normal": "fast",
+        "快速": "fast",
+        "快速模式": "fast",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    raise ValueError(f"invalid Qwen response mode: {value!r}")
+
+
+def resolve_response_mode(
+    payload: dict[str, Any],
+    *,
+    header: str | None = None,
+    default: str = "auto",
+) -> str:
+    """Resolve Qwen web response mode: auto / thinking / fast."""
+    for key in ("response_mode", "qwen_response_mode"):
+        if key in payload:
+            parsed = _parse_response_mode(payload[key])
+            if parsed is not None:
+                return parsed
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("response_mode", "qwen_response_mode"):
+            if key in metadata:
+                parsed = _parse_response_mode(metadata[key])
+                if parsed is not None:
+                    return parsed
+
+    if header is not None:
+        parsed = _parse_response_mode(header)
+        if parsed is not None:
+            return parsed
+
+    # Legacy boolean thinking=true → 思考；false 不覆盖默认
+    for key in ("thinking", "enable_thinking", "deep_thinking"):
+        if key in payload:
+            parsed = _parse_response_mode(payload[key])
+            if parsed is not None:
+                return parsed
+
+    if isinstance(metadata, dict):
+        for key in ("thinking", "enable_thinking", "deep_thinking"):
+            if key in metadata:
+                parsed = _parse_response_mode(metadata[key])
+                if parsed is not None:
+                    return parsed
+
+    parsed_default = _parse_response_mode(default)
+    return parsed_default or "auto"
+
+
 def resolve_thinking(
     payload: dict[str, Any],
     *,
@@ -412,7 +488,13 @@ def create_app(
     upstream_client: httpx.AsyncClient | None = None,
     browser_backend: Any | None = None,
 ) -> FastAPI:
-    logging.basicConfig(level=os.getenv("QWEN_LOG_LEVEL", "INFO"))
+    try:
+        from .logging_setup import configure_logging, is_quiet_http_path
+    except ImportError:
+        from logging_setup import configure_logging, is_quiet_http_path
+
+    configure_logging(env_var="QWEN_LOG_LEVEL")
+
     local_api_key = local_api_key if local_api_key is not None else os.getenv("QWEN_PROXY_API_KEY", "local-secret")
     qwen_api_key = qwen_api_key if qwen_api_key is not None else os.getenv("QWEN_API_KEY")
     qwen_base_url = os.getenv("QWEN_BASE_URL", qwen_base_url).rstrip("/")
@@ -445,29 +527,32 @@ def create_app(
 
     @app.middleware("http")
     async def log_http_requests(request: Request, call_next):
+        quiet = is_quiet_http_path(request.method, request.url.path)
         start = time.perf_counter()
         body = await request.body()
-        logger.info(
-            "request.start method=%s path=%s query=%s headers=%s body=%s",
-            request.method,
-            request.url.path,
-            _truncate(request.url.query or ""),
-            _json_for_log(_safe_headers(dict(request.headers))),
-            _request_body_for_log(body),
-        )
+        if not quiet:
+            logger.info(
+                "request.start method=%s path=%s query=%s headers=%s body=%s",
+                request.method,
+                request.url.path,
+                _truncate(request.url.query or ""),
+                _json_for_log(_safe_headers(dict(request.headers))),
+                _request_body_for_log(body),
+            )
         try:
             response = await call_next(request)
         except Exception:
             logger.exception("request.error method=%s path=%s", request.method, request.url.path)
             raise
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        logger.info(
-            "request.end method=%s path=%s status=%s duration_ms=%s",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-        )
+        if not quiet:
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            logger.info(
+                "request.end method=%s path=%s status=%s duration_ms=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+            )
         return response
 
     @app.exception_handler(HTTPException)
@@ -519,6 +604,7 @@ def create_app(
         authorization: str | None = Header(default=None),
         x_qwen_new_chat: str | None = Header(default=None, alias="X-Qwen-New-Chat"),
         x_qwen_mode: str | None = Header(default=None, alias="X-Qwen-Mode"),
+        x_qwen_response_mode: str | None = Header(default=None, alias="X-Qwen-Response-Mode"),
         x_qwen_thinking: str | None = Header(default=None, alias="X-Qwen-Thinking"),
     ):
         _require_local_key(authorization, local_api_key)
@@ -537,25 +623,25 @@ def create_app(
                 header=x_qwen_mode,
                 default=getattr(backend, "default_qwen_mode", "chat"),
             )
-            thinking = resolve_thinking(
+            response_mode = resolve_response_mode(
                 payload,
-                header=x_qwen_thinking,
-                default=getattr(backend, "default_thinking", False),
+                header=x_qwen_response_mode or x_qwen_thinking,
+                default=getattr(backend, "default_response_mode", "auto"),
             )
             session_id = extract_session_id(payload)
             logger.info(
-                "chat.new_chat=%s session_id=%s qwen_mode=%s thinking=%s",
+                "chat.new_chat=%s session_id=%s qwen_mode=%s response_mode=%s",
                 new_chat,
                 session_id or "-",
                 qwen_mode,
-                thinking,
+                response_mode,
             )
             result = await backend.chat_completion(
                 payload,
                 new_chat=new_chat,
                 session_id=session_id,
                 qwen_mode=qwen_mode,
-                thinking=thinking,
+                response_mode=response_mode,
             )
             model = str(payload.get("model") or "qwen-chat-web")
             logger.info(

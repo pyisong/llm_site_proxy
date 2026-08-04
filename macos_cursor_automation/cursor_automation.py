@@ -382,12 +382,15 @@ def build_serve_uvicorn_log_config(log_dir: Path) -> dict[str, Any]:
     # 仅文件 handler 使用截断 formatter，避免替换 default/access 导致 dictConfig 或运行时字段缺失。
     cfg["formatters"]["file_trunc_default"] = {
         "()": TruncatingLogFormatter,
-        "fmt": "%(levelname)s %(asctime)s %(name)s %(message)s",
+        "fmt": "%(asctime)s.%(msecs)03d | %(levelname)-5s | %(filename)s:%(lineno)d | %(name)s | %(message)s",
         "datefmt": "%Y-%m-%d %H:%M:%S",
     }
     cfg["formatters"]["file_trunc_access"] = {
         "()": TruncatingAccessFormatter,
-        "fmt": '%(levelname)s %(asctime)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+        "fmt": (
+            "%(asctime)s.%(msecs)03d | %(levelname)-5s | %(filename)s:%(lineno)d | "
+            '%(name)s | %(client_addr)s - "%(request_line)s" %(status_code)s'
+        ),
         "datefmt": "%Y-%m-%d %H:%M:%S",
         "use_colors": False,
     }

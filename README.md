@@ -8,7 +8,9 @@
 cd llm_site_proxy
 # 建议设置对外可达 IP，供其他机器/应用识别 base_url
 export CATALOG_PUBLIC_HOST=10.1.10.113
-docker-compose -f docker-compose.start-all.yml up -d --build
+docker-compose -f docker-compose.yml up -d --build
+
+docker-compose up -d --build deepseek-openai-proxy
 ```
 
 ## 服务发现（推荐）
@@ -16,9 +18,9 @@ docker-compose -f docker-compose.start-all.yml up -d --build
 Catalog 监听宿主机 **`18010`**：
 
 ```bash
-curl -s http://127.0.0.1:18010/v1/services | python3 -m json.tool
+curl -s http://10.1.10.113:18010/v1/services | python3 -m json.tool
 # 仅看能生图的服务
-curl -s 'http://127.0.0.1:18010/v1/services?capability=image' | python3 -m json.tool
+curl -s 'http://10.1.10.113:18010/v1/services?capability=image' | python3 -m json.tool
 ```
 
 返回包含：
@@ -30,7 +32,8 @@ curl -s 'http://127.0.0.1:18010/v1/services?capability=image' | python3 -m json.
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `CATALOG_PUBLIC_HOST` | `127.0.0.1` | 写入响应 `base_url` 的宿主机 IP/域名 |
+| `CATALOG_PUBLIC_HOST` | `10.1.10.113` | 写入响应 `base_url` 的宿主机 IP/域名 |
+| （响应字段）`internal_base_url` | Docker DNS | 同 `llm_site_proxy_net` 内用服务名，如 `http://cursor-openai-bridge:8765/v1` |
 | `CATALOG_PORT` | `18010` | catalog 对外端口 |
 | `CATALOG_PROBE_TIMEOUT` | `2.0` | 单次健康/models 探测超时（秒） |
 

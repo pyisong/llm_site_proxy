@@ -152,7 +152,10 @@ def _init_bridge_logging() -> logging.Logger:
     if not log.handlers:
         level_name = os.environ.get("CURSOR_BRIDGE_LOG_LEVEL", "INFO").upper()
         log.setLevel(getattr(logging, level_name, logging.INFO))
-        fmt = TruncatingLogFormatter("%(asctime)s %(levelname)s [cursor_openai_bridge] %(message)s")
+        fmt = TruncatingLogFormatter(
+            "%(asctime)s.%(msecs)03d | %(levelname)-5s | %(filename)s:%(lineno)d | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
         h = logging.StreamHandler()
         h.setFormatter(fmt)
         log.addHandler(h)

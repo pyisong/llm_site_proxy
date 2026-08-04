@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -90,13 +91,12 @@ MODE_LABELS = {
     "web_dev": "网页开发",
 }
 
+# 禁止用 [class*="thinking|loading|stop"]：会命中常驻「自动」下拉、page-loading 等，导致生图永远判定为生成中。
 GENERATION_ACTIVE_SELECTORS = [
     'button:has-text("停止")',
     'button:has-text("Stop")',
-    '[class*="stop"]',
-    '[class*="loading"]',
-    '[class*="thinking"]',
-    '[class*="generating"]',
+    'button[aria-label*="停止"]',
+    'button[aria-label*="Stop"]',
 ]
 
 DEFAULT_ANSWER_SELECTORS = [
@@ -110,6 +110,150 @@ COMPLETION_READY_SELECTORS = [
     ".copy-response-button",
     ".qwen-chat-message-assistant .copy-response-button",
 ]
+
+# 输入框左侧「自动 / 思考 / 快速」下拉（仅聊天模式可见）
+RESPONSE_MODE_LABELS = {
+    "auto": "自动",
+    "thinking": "思考",
+    "fast": "快速",
+}
+
+RESPONSE_MODE_TRIGGER_SELECTORS = [
+    ".qwen-thinking-selector",
+    ".qwen-select-thinking",
+    ".qwen-select-thinking-label",
+]
+
+_FENCE_LANGS = (
+    "json|javascript|js|typescript|ts|python|py|html|css|xml|yaml|yml|toml|text|txt|md|markdown"
+)
+
+# Prefer <pre><code> textContent (no gutter line numbers). Fall back to clone without
+# common line-number / gutter nodes — Qwen's highlighter otherwise pollutes innerText.
+_ANSWER_TEXT_JS = """(el) => {
+  const pickJson = (raw) => {
+    const text = (raw || '').trim();
+    if (!text) return null;
+    if ((text.startsWith('{') && text.endsWith('}'))
+        || (text.startsWith('[') && text.endsWith(']'))) {
+      try { JSON.parse(text); return text; } catch (e) {}
+    }
+    return null;
+  };
+
+  const codeNodes = Array.from(el.querySelectorAll('pre code, pre'));
+  for (const node of codeNodes) {
+    const raw = (node.textContent || '').trim();
+    const json = pickJson(raw);
+    if (json) return json;
+  }
+  if (codeNodes.length === 1) {
+    const only = (codeNodes[0].textContent || '').trim();
+    if (only) return only;
+  }
+
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll(
+    '.linenumber, .line-number, .line-numbers, [class*="line-number"], '
+    + '[class*="linenumber"], [class*="line-numbers-rows"], [class*="gutter"]'
+  ).forEach((n) => n.remove());
+  return (clone.innerText || el.innerText || '').trim();
+}"""
+
+
+def extract_balanced_json(text: str) -> str | None:
+    """从文本中提取第一个完整 JSON 对象或数组；未闭合则返回 None。"""
+    if not text:
+        return None
+    start_candidates = [(text.find("{"), "{", "}"), (text.find("["), "[", "]")]
+    start_candidates = [
+        (idx, open_ch, close_ch)
+        for idx, open_ch, close_ch in start_candidates
+        if idx >= 0
+    ]
+    if not start_candidates:
+        return None
+    start, open_ch, close_ch = min(start_candidates, key=lambda item: item[0])
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        ch = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                candidate = text[start : index + 1].strip()
+                try:
+                    json.loads(candidate)
+                except Exception:
+                    return None
+                return candidate
+    return None
+
+
+def strip_markdown_code_fence(text: str) -> str:
+    """去掉 ```json ... ```；innerText 丢反引号时也去掉裸语言行。"""
+    normalized = (text or "").strip()
+    if not normalized:
+        return ""
+    fenced = re.match(
+        rf"^```(?:{_FENCE_LANGS})?\s*\n([\s\S]*?)\n?```\s*$",
+        normalized,
+        re.IGNORECASE,
+    )
+    if fenced:
+        return fenced.group(1).strip()
+    bare = re.match(rf"^({_FENCE_LANGS})\s*\n([\s\S]*)$", normalized, re.IGNORECASE)
+    if bare:
+        return bare.group(2).strip()
+    return normalized
+
+
+def strip_code_gutter_line_numbers(text: str) -> str:
+    """去掉代码高亮左侧行号（连续纯数字行）。"""
+    lines = text.splitlines()
+    if not lines:
+        return text
+    digit_only = [bool(re.fullmatch(r"\s*\d+\s*", line)) for line in lines]
+    digit_count = sum(digit_only)
+    if digit_count < 3:
+        return text
+    if digit_count < max(3, len(lines) // 5):
+        return text
+    kept = [line for line, is_digit in zip(lines, digit_only) if not is_digit]
+    return "\n".join(kept).strip()
+
+
+def finalize_answer_text(text: str) -> str:
+    """去掉 fence/行号污染；若含完整 JSON 则只返回 JSON。"""
+    normalized = (text or "").strip()
+    if not normalized:
+        return ""
+    candidates = [
+        normalized,
+        strip_markdown_code_fence(normalized),
+        strip_code_gutter_line_numbers(normalized),
+        strip_code_gutter_line_numbers(strip_markdown_code_fence(normalized)),
+    ]
+    for candidate in candidates:
+        extracted = extract_balanced_json(candidate)
+        if extracted:
+            return extracted
+    cleaned = strip_code_gutter_line_numbers(strip_markdown_code_fence(normalized))
+    return cleaned or normalized
 
 
 @dataclass
@@ -139,6 +283,7 @@ class BrowserQwenClient:
         new_chat_per_request: bool = True,
         new_chat_selector: str | None = None,
         default_qwen_mode: str = "chat",
+        default_response_mode: str = "auto",
         default_thinking: bool = False,
     ) -> None:
         self.user_data_dir = user_data_dir
@@ -159,6 +304,7 @@ class BrowserQwenClient:
         self.new_chat_per_request = new_chat_per_request
         self.new_chat_selector = new_chat_selector
         self.default_qwen_mode = default_qwen_mode
+        self.default_response_mode = default_response_mode
         self.default_thinking = default_thinking
         self._playwright: Any | None = None
         self._browser: Any | None = None
@@ -203,6 +349,7 @@ class BrowserQwenClient:
             new_chat_per_request=os.getenv("QWEN_NEW_CHAT_PER_REQUEST", "1") == "1",
             new_chat_selector=os.getenv("QWEN_NEW_CHAT_SELECTOR"),
             default_qwen_mode=os.getenv("QWEN_DEFAULT_MODE", "chat"),
+            default_response_mode=os.getenv("QWEN_RESPONSE_MODE", "auto"),
             default_thinking=os.getenv("QWEN_THINKING", "0") == "1",
         )
 
@@ -475,6 +622,104 @@ class BrowserQwenClient:
             label = MODE_LABELS.get(suffix, suffix)
             raise RuntimeError(f"未找到或无法切换到 Qwen 模式: {label}")
 
+    async def _current_response_mode_label(self, page: Any) -> str | None:
+        try:
+            locator = page.locator(".qwen-select-thinking-label-text").first
+            if await locator.count() == 0:
+                return None
+            text = (await locator.inner_text()).strip()
+            return text or None
+        except Exception:
+            return None
+
+    async def _response_mode_dropdown_open(self, page: Any) -> bool:
+        try:
+            locator = page.locator(".ant-select-item-option").first
+            return await locator.count() > 0 and await locator.is_visible()
+        except Exception:
+            return False
+
+    async def _open_response_mode_dropdown(self, page: Any) -> bool:
+        if await self._response_mode_dropdown_open(page):
+            return True
+        for selector in RESPONSE_MODE_TRIGGER_SELECTORS:
+            locator = page.locator(selector)
+            try:
+                if await locator.count() == 0:
+                    continue
+                target = locator.first
+                if not await target.is_visible():
+                    continue
+                await target.click(timeout=3_000)
+                await asyncio.sleep(0.35)
+                if await self._response_mode_dropdown_open(page):
+                    logger.info("browser.response_mode dropdown opened selector=%s", selector)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _select_response_mode(self, page: Any, response_mode: str) -> bool:
+        mode_key = response_mode.strip().lower()
+        label = RESPONSE_MODE_LABELS.get(mode_key)
+        if not label:
+            raise ValueError(f"unsupported Qwen response mode: {response_mode!r}")
+
+        current = await self._current_response_mode_label(page)
+        if current == label:
+            logger.info("browser.option skip=response_mode:%s state=selected", mode_key)
+            return False
+
+        if not await self._open_response_mode_dropdown(page):
+            raise RuntimeError(
+                f"未找到 Qwen 响应模式控件（自动/思考/快速），无法切换到: {label}"
+            )
+
+        option_selectors = [
+            f'.ant-select-item-option:has-text("{label}")',
+            f'[role="option"]:has-text("{label}")',
+        ]
+        for selector in option_selectors:
+            locator = page.locator(selector)
+            try:
+                if await locator.count() == 0:
+                    continue
+                option = locator.first
+                if not await option.is_visible():
+                    continue
+                await option.click(timeout=3_000)
+                await asyncio.sleep(0.35)
+                selected = await self._current_response_mode_label(page)
+                if selected == label:
+                    logger.info(
+                        "browser.option click=response_mode:%s label=%s selector=%s",
+                        mode_key,
+                        label,
+                        selector,
+                    )
+                    return True
+            except Exception:
+                continue
+
+        raise RuntimeError(f"未找到或无法切换到 Qwen 响应模式: {label}")
+
+    async def _apply_chat_options(
+        self,
+        page: Any,
+        *,
+        qwen_mode: str,
+        response_mode: str,
+    ) -> None:
+        await self._apply_qwen_mode(page, qwen_mode)
+        if MODE_SUFFIXES.get(qwen_mode.strip().lower()) is not None:
+            logger.info(
+                "browser.response_mode skip=%s reason=non_chat_qwen_mode=%s",
+                response_mode,
+                qwen_mode,
+            )
+            return
+        await self._select_response_mode(page, response_mode)
+
     async def _upload_reference_files(self, page: Any, file_paths: list[str]) -> None:
         if not file_paths:
             return
@@ -537,7 +782,7 @@ class BrowserQwenClient:
         new_chat: bool | None = None,
         session_id: str | None = None,
         reference_image_paths: list[str] | None = None,
-        thinking: bool | None = None,
+        response_mode: str | None = None,
     ) -> BrowserResult:
         should_new_chat = self.new_chat_per_request if new_chat is None else new_chat
         sid = (session_id or "").strip() or None
@@ -553,6 +798,9 @@ class BrowserQwenClient:
                     sid,
                 )
             page = await self._ensure_page()
+            # 上一轮超时后「停止」可能仍在：先停再等空闲，否则 new_chat 后也切不了「生成图像」
+            await self._stop_generation_if_active(page)
+            await self._wait_for_generation_idle(page, max_wait_seconds=45.0)
             if should_new_chat:
                 await self._start_new_conversation(page)
                 self._active_session_id = sid
@@ -566,11 +814,15 @@ class BrowserQwenClient:
                     mode,
                     len(ref_paths),
                 )
-            await self._apply_qwen_mode(page, mode)
-            if thinking is not None and thinking != self.default_thinking:
-                logger.info("browser.thinking requested=%s (UI toggle not yet automated)", thinking)
-            if not should_new_chat:
-                await self._wait_for_generation_idle(page)
+            # new_chat 后 UI 重置，仍可能残留生成态；切模式前再清一次
+            await self._stop_generation_if_active(page)
+            await self._wait_for_generation_idle(page, max_wait_seconds=20.0)
+            resolved_response_mode = (response_mode or self.default_response_mode or "auto").strip().lower()
+            await self._apply_chat_options(
+                page,
+                qwen_mode=mode,
+                response_mode=resolved_response_mode,
+            )
             if ref_paths:
                 await self._upload_reference_files(page, ref_paths)
             input_box = page.locator(self.input_selector).first
@@ -585,14 +837,22 @@ class BrowserQwenClient:
                 len(ref_paths),
             )
             await self._send_message(page, input_box, prompt)
-            await self._wait_for_new_answer(page, answer_blocks, before_count, before_last_text)
-            text = await self._wait_until_answer_stable(
-                page,
-                answer_blocks,
-                timeout_seconds=self._timeout_for_mode(mode),
-            )
+            try:
+                await self._wait_for_new_answer(page, answer_blocks, before_count, before_last_text)
+                text = await self._wait_until_answer_stable(
+                    page,
+                    answer_blocks,
+                    timeout_seconds=self._timeout_for_mode(mode),
+                )
+            except TimeoutError:
+                await self._stop_generation_if_active(page)
+                raise
             image_urls, video_urls = await self._extract_media_from_last_answer(page)
-            return BrowserResult(text=text, image_urls=image_urls, video_urls=video_urls)
+            return BrowserResult(
+                text=finalize_answer_text(text),
+                image_urls=image_urls,
+                video_urls=video_urls,
+            )
 
     async def _scroll_chat_to_bottom(self, page: Any) -> None:
         try:
@@ -610,12 +870,34 @@ class BrowserQwenClient:
                 continue
         return False
 
+    async def _stop_generation_if_active(self, page: Any) -> bool:
+        """点击「停止」以释放卡住的生成态，避免下一轮切不了 t2i 模式。"""
+        if not await self._is_generation_active(page):
+            return False
+        for selector in GENERATION_ACTIVE_SELECTORS:
+            locator = page.locator(selector)
+            try:
+                if await locator.count() == 0:
+                    continue
+                button = locator.first
+                if not await button.is_visible():
+                    continue
+                await button.click(timeout=3_000)
+                logger.info("browser.stop_generation selector=%s", selector)
+                await asyncio.sleep(0.5)
+                return True
+            except Exception:
+                continue
+        return False
+
     async def _wait_for_generation_idle(self, page: Any, *, max_wait_seconds: float = 30.0) -> None:
         deadline = time.monotonic() + max_wait_seconds
         while time.monotonic() < deadline:
             if not await self._is_generation_active(page):
                 return
             await asyncio.sleep(0.5)
+        if await self._is_generation_active(page):
+            logger.warning("browser.generation_still_active after_wait=%.1fs", max_wait_seconds)
 
     async def _click_send_button(self, page: Any) -> bool:
         for selector in DEFAULT_SEND_BUTTON_SELECTORS:
@@ -639,11 +921,24 @@ class BrowserQwenClient:
         return False
 
     async def _send_message(self, page: Any, input_box: Any, prompt: str) -> None:
+        # Use fill() instead of type(delay=…): long prompts (articles + skills)
+        # otherwise exceed Playwright's default 30s locator timeout.
         await self._scroll_chat_to_bottom(page)
         await input_box.click(timeout=5_000)
         await input_box.fill("")
-        await input_box.type(prompt, delay=15)
+        await input_box.fill(prompt)
         await asyncio.sleep(0.2)
+        # Multiline / long text: prefer send button (Enter may insert newline only).
+        if len(prompt) > 80 or "\n" in prompt:
+            if await self._click_send_button(page):
+                await asyncio.sleep(0.4)
+                try:
+                    remaining = (await input_box.input_value()).strip()
+                except Exception:
+                    remaining = ""
+                if not remaining:
+                    return
+                logger.info("browser.send button left remaining_chars=%s, trying Enter", len(remaining))
         await input_box.press("Enter")
         await asyncio.sleep(0.5)
         try:
@@ -655,41 +950,78 @@ class BrowserQwenClient:
             if not await self._click_send_button(page):
                 raise RuntimeError("消息未能发送：输入框在 Enter 后仍有内容，且未找到发送按钮")
 
+    async def _read_block_text(self, block: Any) -> str:
+        """Read answer text without code-gutter line numbers when possible."""
+        try:
+            text = await block.evaluate(_ANSWER_TEXT_JS)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        except Exception:
+            pass
+        try:
+            return (await block.inner_text()).strip()
+        except Exception:
+            return ""
+
     async def _last_answer_snapshot(self, answer_blocks: Any) -> tuple[int, str]:
         count = await answer_blocks.count()
         if count == 0:
             return 0, ""
-        text = (await answer_blocks.nth(count - 1).inner_text()).strip()
+        text = await self._read_block_text(answer_blocks.nth(count - 1))
         return count, text
+
+    @staticmethod
+    def _normalize_media_url(url: str | None) -> str | None:
+        if not url:
+            return None
+        stripped = url.strip()
+        if stripped.startswith("//"):
+            stripped = "https:" + stripped
+        if not stripped.startswith("http"):
+            return None
+        return stripped
+
+    async def _collect_img_srcs(self, images: Any, image_urls: list[str]) -> None:
+        image_count = await images.count()
+        for index in range(image_count):
+            src = self._normalize_media_url(await images.nth(index).get_attribute("src"))
+            if src and src not in image_urls:
+                image_urls.append(src)
 
     async def _extract_media_from_last_answer(self, page: Any) -> tuple[list[str], list[str]]:
         image_urls: list[str] = []
         video_urls: list[str] = []
+
+        # t2i 主路径：图片在 .qwen-image / .qwen-markdown-image-content，不在 phase-answer 文本块里
+        for selector in (
+            "img.qwen-image",
+            ".qwen-markdown-image-content img",
+            ".qwen-image img",
+        ):
+            await self._collect_img_srcs(page.locator(selector), image_urls)
+            if image_urls:
+                return image_urls, video_urls
+
         assistant_blocks = page.locator(".qwen-chat-message-assistant, .chat-response-message")
         count = await assistant_blocks.count()
         if count == 0:
             return image_urls, video_urls
 
         block = assistant_blocks.nth(count - 1)
-        images = block.locator("img")
-        image_count = await images.count()
-        for index in range(image_count):
-            src = await images.nth(index).get_attribute("src")
-            if src and src.startswith("http") and src not in image_urls:
-                image_urls.append(src)
+        await self._collect_img_srcs(block.locator("img"), image_urls)
 
         videos = block.locator("video")
         video_count = await videos.count()
         for index in range(video_count):
-            src = await videos.nth(index).get_attribute("src")
-            if src and src.startswith("http") and src not in video_urls:
+            src = self._normalize_media_url(await videos.nth(index).get_attribute("src"))
+            if src and src not in video_urls:
                 video_urls.append(src)
 
         links = block.locator("a[href]")
         link_count = await links.count()
         for index in range(link_count):
-            href = await links.nth(index).get_attribute("href")
-            if not href or not href.startswith("http"):
+            href = self._normalize_media_url(await links.nth(index).get_attribute("href"))
+            if not href:
                 continue
             lower = href.lower()
             if any(ext in lower for ext in (".mp4", ".webm", ".mov", "video")):
@@ -716,7 +1048,7 @@ class BrowserQwenClient:
         new_chat: bool | None = None,
         session_id: str | None = None,
         qwen_mode: str | None = None,
-        thinking: bool | None = None,
+        response_mode: str | None = None,
     ) -> BrowserResult:
         messages = payload.get("messages") or []
         if not isinstance(messages, list):
@@ -734,7 +1066,7 @@ class BrowserQwenClient:
             qwen_mode=mode,
             new_chat=should_new_chat,
             session_id=sid,
-            thinking=thinking,
+            response_mode=response_mode,
         )
 
     async def generate_image(
@@ -744,10 +1076,12 @@ class BrowserQwenClient:
         new_chat: bool | None = None,
         reference_image_paths: list[str] | None = None,
     ) -> BrowserResult:
+        # 生图模式不得默认接在 chat 会话后；未显式指定时强制新对话
+        resolved_new_chat = True if new_chat is None else bool(new_chat)
         return await self._run_generation(
             prompt=prompt,
             qwen_mode="image",
-            new_chat=new_chat,
+            new_chat=resolved_new_chat,
             reference_image_paths=reference_image_paths,
         )
 
@@ -789,19 +1123,28 @@ class BrowserQwenClient:
         before_last_text: str,
     ) -> None:
         deadline = time.monotonic() + self.start_timeout_seconds
+        # 仅接受 idle→active 边沿：残留「停止」按钮不能当成新回答已开始
+        saw_idle = not await self._is_generation_active(page)
         while time.monotonic() < deadline:
             count = await answer_blocks.count()
             if count > before_count:
                 logger.info("browser.answer_started count=%s->%s", before_count, count)
                 return
             if count > 0 and before_count > 0:
-                text = (await answer_blocks.nth(count - 1).inner_text()).strip()
+                text = await self._read_block_text(answer_blocks.nth(count - 1))
                 if text and text != before_last_text:
                     logger.info("browser.answer_started last_text_changed")
                     return
-            if await self._is_generation_active(page):
+            image_urls, video_urls = await self._extract_media_from_last_answer(page)
+            if image_urls or video_urls:
+                logger.info("browser.answer_started media images=%s videos=%s", len(image_urls), len(video_urls))
+                return
+            active = await self._is_generation_active(page)
+            if active and saw_idle:
                 logger.info("browser.answer_started generation_active")
                 return
+            if not active:
+                saw_idle = True
             await asyncio.sleep(0.5)
         count = await answer_blocks.count()
         raise TimeoutError(
@@ -822,10 +1165,10 @@ class BrowserQwenClient:
         stable_count = 0
         while time.monotonic() < deadline:
             count = await answer_blocks.count()
-            if count == 0:
-                await asyncio.sleep(0.5)
-                continue
-            text = (await answer_blocks.nth(count - 1).inner_text()).strip()
+            text = ""
+            if count > 0:
+                text = await self._read_block_text(answer_blocks.nth(count - 1))
+
             copy_ready = False
             for selector in COMPLETION_READY_SELECTORS:
                 locator = page.locator(selector)
@@ -838,18 +1181,23 @@ class BrowserQwenClient:
 
             image_urls, video_urls = await self._extract_media_from_last_answer(page)
             has_media = bool(image_urls or video_urls)
+            media_done = has_media and not await self._is_generation_active(page)
+            text_stable = bool(text) and text == last_text
 
-            if (text and text == last_text) or (has_media and not await self._is_generation_active(page)):
+            # 生图常无文本块（answer_blocks 为空）；有 CDN 图且停止按钮消失即视为完成
+            if media_done or text_stable:
                 stable_count += 1
-                if stable_count >= 4 or (copy_ready and stable_count >= 2):
-                    return text or last_text
+                needed = 2 if (media_done or copy_ready) else 4
+                if stable_count >= needed:
+                    return finalize_answer_text(text or last_text)
             else:
                 stable_count = 0
-                last_text = text
+                if text:
+                    last_text = text
             await asyncio.sleep(0.75)
 
         if last_text:
-            return last_text
+            return finalize_answer_text(last_text)
         image_urls, video_urls = await self._extract_media_from_last_answer(page)
         if image_urls or video_urls:
             return ""

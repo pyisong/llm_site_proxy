@@ -14,6 +14,7 @@ from app import (
     extract_session_id,
     resolve_new_chat,
     resolve_qwen_mode,
+    resolve_response_mode,
     resolve_thinking,
 )
 import app as app_module
@@ -42,10 +43,12 @@ class FakeBrowserBackend:
         self.payloads = []
         self.new_chat_flags = []
         self.qwen_modes = []
+        self.response_modes = []
         self.thinking_flags = []
         self.reference_paths = []
         self.new_chat_per_request = new_chat_per_request
         self.default_qwen_mode = "chat"
+        self.default_response_mode = "auto"
         self.default_thinking = False
 
     async def chat_completion(
@@ -55,11 +58,13 @@ class FakeBrowserBackend:
         new_chat=None,
         session_id=None,
         qwen_mode=None,
+        response_mode=None,
         thinking=None,
     ):
         self.payloads.append(payload)
         self.new_chat_flags.append(new_chat)
         self.qwen_modes.append(qwen_mode)
+        self.response_modes.append(response_mode)
         self.thinking_flags.append(thinking)
         return BrowserResult(text="browser pong")
 
@@ -131,6 +136,32 @@ async def test_chat_completion_browser_backend():
     body = response.json()
     assert body["choices"][0]["message"]["content"] == "browser pong"
     assert browser_backend.new_chat_flags == [True]
+    assert browser_backend.response_modes == ["auto"]
+
+
+@pytest.mark.anyio
+async def test_chat_completion_passes_response_mode_to_browser():
+    browser_backend = FakeBrowserBackend()
+    app = create_app(
+        local_api_key="local-secret",
+        backend_mode="browser",
+        browser_backend=browser_backend,
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers=auth_headers(),
+            json={
+                "model": "qwen-chat-web",
+                "response_mode": "thinking",
+                "messages": [{"role": "user", "content": "analyze this"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert browser_backend.response_modes == ["thinking"]
 
 
 @pytest.mark.anyio
@@ -296,6 +327,15 @@ def test_resolve_new_chat_priority():
     assert resolve_new_chat({"new_chat": False}, default=True) is False
     assert resolve_new_chat({"metadata": {"new_chat": True}}, default=False) is True
     assert resolve_new_chat({}, header="false", default=True) is False
+
+
+def test_resolve_response_mode_priority_and_aliases():
+    assert resolve_response_mode({"response_mode": "thinking"}, default="auto") == "thinking"
+    assert resolve_response_mode({"metadata": {"qwen_response_mode": "快速"}}, default="auto") == "fast"
+    assert resolve_response_mode({}, header="auto", default="fast") == "auto"
+    assert resolve_response_mode({"thinking": True}, default="auto") == "thinking"
+    assert resolve_response_mode({"thinking": False}, default="fast") == "fast"
+    assert resolve_response_mode({}, default="auto") == "auto"
 
 
 def test_resolve_thinking_priority():

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .answer_markdown import ANSWER_MARKDOWN_JS, COPY_BUTTON_JS, choose_answer_text
     from .app import compose_browser_prompt
     from .curl_cookies import load_auth_from_file
     from .storage_state import (
@@ -21,6 +22,7 @@ try:
         storage_state_summary,
     )
 except ImportError:
+    from answer_markdown import ANSWER_MARKDOWN_JS, COPY_BUTTON_JS, choose_answer_text
     from app import compose_browser_prompt
     from curl_cookies import load_auth_from_file
     from storage_state import (
@@ -101,6 +103,22 @@ GENERATION_ACTIVE_SELECTORS = [
     '[class*="thinking"]',
 ]
 
+# React-controlled textarea: assign via native setter + input event.
+_SET_TEXTAREA_VALUE_JS = """
+(el, text) => {
+    el.focus();
+    const desc = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+    );
+    if (desc && desc.set) desc.set.call(el, text);
+    else el.value = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return (el.value || "").length;
+}
+"""
+
 
 class BrowserDeepSeekClient:
     def __init__(
@@ -145,6 +163,9 @@ class BrowserDeepSeekClient:
         self._page: Any | None = None
         self._lock = asyncio.Lock()
         self._active_session_id: str | None = None
+        # Avoid re-clicking mode toggles every request (bare text= clicks can hide the composer).
+        self._applied_web_mode: str | None = None
+        self._applied_deep_thinking: bool | None = None
 
     @classmethod
     def from_env(cls) -> "BrowserDeepSeekClient":
@@ -235,6 +256,7 @@ class BrowserDeepSeekClient:
             else:
                 await self._page.goto(self.chat_url, wait_until="domcontentloaded", timeout=60_000)
 
+        await self._grant_clipboard_permissions(self._context)
         await self._wait_for_chat_ready(self._page, used_storage_state=bool(storage_state and self.storage_state_file))
         return self._page
 
@@ -368,6 +390,98 @@ class BrowserDeepSeekClient:
         except Exception:
             pass
 
+    async def _locator_is_visible(self, locator: Any) -> bool:
+        try:
+            return bool(await locator.is_visible())
+        except Exception:
+            return False
+
+    async def _dismiss_overlays(self, page: Any) -> None:
+        """Close mode popovers / modals that can hide the chat composer."""
+        try:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.15)
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+    async def _resolve_input_box(self, page: Any, *, timeout_ms: float = 10_000) -> Any:
+        """Prefer a visible chat textarea; DeepSeek may keep hidden duplicates in the DOM."""
+        locator = page.locator(self.input_selector)
+        deadline = time.monotonic() + (timeout_ms / 1000.0)
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                count = await locator.count()
+            except Exception as exc:
+                last_error = exc
+                await asyncio.sleep(0.2)
+                continue
+            for index in range(count):
+                candidate = locator.nth(index)
+                try:
+                    if await candidate.is_visible():
+                        if index > 0:
+                            logger.info(
+                                "browser.input resolved visible_index=%s count=%s",
+                                index,
+                                count,
+                            )
+                        return candidate
+                except Exception as exc:
+                    last_error = exc
+                    continue
+            await asyncio.sleep(0.2)
+        # Fall back to first match so JS fill path can still try.
+        logger.warning(
+            "browser.input no_visible_match selector=%s last_error=%s; using .first",
+            self.input_selector,
+            last_error,
+        )
+        return locator.first
+
+    async def _focus_input(self, input_box: Any) -> None:
+        visible = await self._locator_is_visible(input_box)
+        if visible:
+            try:
+                await input_box.scroll_into_view_if_needed(timeout=3_000)
+            except Exception:
+                pass
+            try:
+                await input_box.click(timeout=3_000)
+                return
+            except Exception as exc:
+                logger.warning("browser.input click failed (%s); retrying force/focus", exc)
+            try:
+                await input_box.click(timeout=2_000, force=True)
+                return
+            except Exception as exc:
+                logger.warning("browser.input force click failed (%s); using JS focus", exc)
+        await input_box.evaluate(
+            """(el) => {
+                el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                el.focus();
+                try { el.click(); } catch (e) {}
+            }"""
+        )
+
+    async def _fill_input_via_js(self, input_box: Any, prompt: str) -> None:
+        written = await input_box.evaluate(_SET_TEXTAREA_VALUE_JS, prompt)
+        logger.info("browser.input js_fill chars=%s written=%s", len(prompt), written)
+
+    async def _fill_input(self, input_box: Any, prompt: str) -> None:
+        visible = await self._locator_is_visible(input_box)
+        # Large prompts + hidden composers: Playwright fill can stall for minutes.
+        if (not visible) or len(prompt) >= 4_000:
+            await self._fill_input_via_js(input_box, prompt)
+            return
+        try:
+            await input_box.fill(prompt, timeout=5_000)
+            return
+        except Exception as exc:
+            logger.warning("browser.input fill failed (%s); using JS fill", exc)
+        await self._fill_input_via_js(input_box, prompt)
+
     async def _is_generation_active(self, page: Any) -> bool:
         for selector in GENERATION_ACTIVE_SELECTORS:
             locator = page.locator(selector)
@@ -473,6 +587,14 @@ class BrowserDeepSeekClient:
                     return False
                 if (await control.get_attribute("aria-disabled")) == "true":
                     continue
+                # Bare text= matches often lack ARIA; repeated blind clicks open panels that hide input.
+                if current is None and selector.startswith("text="):
+                    logger.info(
+                        "browser.option skip=%s selector=%s reason=no_aria_on_text_match",
+                        option_name,
+                        selector,
+                    )
+                    continue
                 await control.click(timeout=3_000)
                 logger.info("browser.option click=%s selector=%s", option_name, selector)
                 return True
@@ -484,13 +606,25 @@ class BrowserDeepSeekClient:
         label = WEB_MODE_LABELS.get(web_mode)
         if not label:
             raise ValueError(f"unsupported DeepSeek web mode: {web_mode!r}")
+        short_label = label.replace("模式", "")
+        selectors = [
+            f'[role="radio"]:has-text("{label}")',
+            f'[tabindex="0"]:has-text("{label}")',
+            f'[role="button"]:has-text("{label}")',
+            f'div.ds-segmented-button:has-text("{label}")',
+        ]
+        if short_label and short_label != label:
+            selectors.extend(
+                [
+                    f'[role="radio"]:has-text("{short_label}")',
+                    f'[tabindex="0"]:has-text("{short_label}")',
+                ]
+            )
+        # Last resort only — skipped automatically when aria state is missing.
+        selectors.append(f'text="{label}"')
         return await self._click_if_needed(
             page,
-            [
-                f'[role="radio"]:has-text("{label}")',
-                f'[tabindex="0"]:has-text("{label}")',
-                f'text="{label}"',
-            ],
+            selectors,
             state_attribute="aria-checked",
             desired=True,
             option_name=f"web_mode:{web_mode}",
@@ -517,15 +651,35 @@ class BrowserDeepSeekClient:
         deep_thinking: bool | None = None,
     ) -> None:
         if web_mode:
-            await self._select_web_mode(page, web_mode)
+            if web_mode == self._applied_web_mode:
+                logger.info("browser.option skip=web_mode:%s reason=session_cached", web_mode)
+            else:
+                try:
+                    await self._select_web_mode(page, web_mode)
+                    self._applied_web_mode = web_mode
+                except RuntimeError as exc:
+                    # Keep going with whatever mode the page already shows.
+                    logger.warning("browser.option web_mode failed: %s", exc)
+                    self._applied_web_mode = web_mode
         if deep_thinking is not None:
-            await self._set_deep_thinking(page, deep_thinking)
+            if deep_thinking == self._applied_deep_thinking:
+                logger.info(
+                    "browser.option skip=deep_thinking:%s reason=session_cached",
+                    deep_thinking,
+                )
+            else:
+                try:
+                    await self._set_deep_thinking(page, deep_thinking)
+                    self._applied_deep_thinking = deep_thinking
+                except RuntimeError as exc:
+                    logger.warning("browser.option deep_thinking failed: %s", exc)
+                    self._applied_deep_thinking = deep_thinking
+        await self._dismiss_overlays(page)
 
     async def _send_message(self, page: Any, input_box: Any, prompt: str) -> None:
         await self._scroll_chat_to_bottom(page)
-        await input_box.click(timeout=5_000)
-        await input_box.fill("")
-        await input_box.fill(prompt)
+        await self._focus_input(input_box)
+        await self._fill_input(input_box, prompt)
         await asyncio.sleep(0.2)
 
         # Long or multiline prompts need the send button; Enter often inserts newline only.
@@ -558,6 +712,156 @@ class BrowserDeepSeekClient:
         text = (await answer_blocks.nth(count - 1).inner_text()).strip()
         return count, text
 
+    async def _grant_clipboard_permissions(self, context: Any) -> None:
+        """读剪贴板需要显式授权；失败不致命，后面会退到 DOM 还原。"""
+        try:
+            await context.grant_permissions(
+                ["clipboard-read", "clipboard-write"],
+                origin=self.chat_url,
+            )
+        except Exception as exc:
+            logger.info("browser.clipboard permission unavailable: %s", exc)
+
+    async def _clipboard_markdown(self, page: Any, block: Any) -> str | None:
+        """点消息自带的「复制」按钮，读回 Markdown 源码。"""
+        try:
+            try:
+                await block.hover(timeout=2_000)
+            except Exception:
+                pass
+            button = None
+            # 工具栏按钮出现/可点击有时有延迟：重试多轮，避免偶发 copy_button=not_found。
+            for delay_s in (0.15, 0.45, 0.9, 1.2):
+                await asyncio.sleep(delay_s)
+                try:
+                    await block.hover(timeout=1_000)
+                except Exception:
+                    pass
+                handle = await block.evaluate_handle(COPY_BUTTON_JS)
+                button = handle.as_element()
+                if button is not None:
+                    break
+            if button is None:
+                logger.info("browser.answer copy_button=not_found")
+                return None
+
+            # 第 1 轮：点 JS 选择的按钮
+            for _ in range(2):
+                await button.click(timeout=2_000)
+                for _ in range(6):
+                    await asyncio.sleep(0.25)
+                    text = await page.evaluate("() => navigator.clipboard.readText()")
+                    if isinstance(text, str) and "```" in text:
+                        return text
+
+            # 第 2 轮：兜底尝试同一条消息附近的其它图标按钮
+            # 目的：避免 COPY_BUTTON_JS 误点其它按钮，导致剪贴板复制到提示词而非 Markdown。
+            candidates = await block.evaluate(
+                """
+                (el) => {
+                  const elRect = el.getBoundingClientRect();
+                  const cx = elRect.left + elRect.width / 2;
+                  const cy = elRect.top + elRect.height / 2;
+                  const out = [];
+                  const btns = Array.from(document.querySelectorAll('[role=\"button\"], button'))
+                    .filter((n) => !n.closest('[class*=\"code-block\"]'));
+                  for (const n of btns) {
+                    const r = n.getBoundingClientRect();
+                    if (r.width <= 0 || r.height <= 0) continue;
+                    const d = Math.hypot((r.left + r.width/2) - cx, (r.top + r.height/2) - cy);
+                    // 只在合理距离内找，避免点到其它消息的工具栏
+                    if (d > 650) continue;
+                    out.push({ x: r.left + r.width/2, y: r.top + r.height/2, d });
+                  }
+                  out.sort((a,b)=>a.d-b.d);
+                  return out.slice(0, 8);
+                }
+                """
+            )
+            for c in candidates:
+                await page.mouse.click(c["x"], c["y"])
+                for _ in range(6):
+                    await asyncio.sleep(0.25)
+                    text = await page.evaluate("() => navigator.clipboard.readText()")
+                    if isinstance(text, str) and "```" in text:
+                        return text
+            return None
+        except Exception as exc:
+            logger.info("browser.answer clipboard unavailable: %s", exc)
+            return None
+
+    async def _dom_markdown(self, block: Any) -> str | None:
+        """页面内把渲染后的 DOM 反序列化回 Markdown。"""
+        try:
+            # DeepSeek 的 mermaid 渲染区有一个“代码”按钮；有时源码在切换到代码视图后才会落到 DOM。
+            # 先尝试切换，再做 DOM→Markdown，避免 mermaid 退化成“图表/代码/下载/全屏”纯文案。
+            try:
+                await block.evaluate(
+                    """
+                    (el) => {
+                      const btns = Array.from(el.querySelectorAll('[role="button"], button'))
+                        .filter((b) => !b.closest('[class*="code-block"]'));
+                      for (const b of btns) {
+                        const t = (b.innerText || "").trim();
+                        if (t === "代码" || t.includes("代码")) {
+                          b.click();
+                          return true;
+                        }
+                      }
+                      return false;
+                    }
+                    """
+                )
+                await asyncio.sleep(0.8)
+            except Exception:
+                pass
+            text = await block.evaluate(ANSWER_MARKDOWN_JS)
+            if isinstance(text, str) and text.strip():
+                return text
+            return None
+        except Exception as exc:
+            logger.warning("browser.answer dom markdown failed: %s", exc)
+            return None
+
+    async def _extract_answer_markdown(
+        self,
+        page: Any,
+        answer_blocks: Any,
+        rendered: str,
+    ) -> str:
+        """取回原始 Markdown：剪贴板优先，其次 DOM 还原，最后退回渲染文本。"""
+        count = await answer_blocks.count()
+        if count == 0:
+            return rendered
+        block = answer_blocks.nth(count - 1)
+        clipboard = await self._clipboard_markdown(page, block)
+        dom_markdown = await self._dom_markdown(block)
+        chosen = choose_answer_text(
+            clipboard=clipboard,
+            dom_markdown=dom_markdown,
+            rendered=rendered,
+        )
+        if clipboard and chosen == clipboard.strip():
+            source = "clipboard"
+        elif dom_markdown and chosen == dom_markdown.strip():
+            source = "dom_markdown"
+        else:
+            source = "rendered_text"
+        logger.info(
+            "browser.answer source=%s chars=%s rendered_chars=%s",
+            source,
+            len(chosen),
+            len(rendered or ""),
+        )
+        if source == "rendered_text":
+            logger.warning(
+                "browser.answer 未取到 Markdown 源码，正文可能丢失标题/表格/代码围栏"
+                " (clipboard=%s dom=%s)",
+                "empty" if not clipboard else f"{len(clipboard)}chars",
+                "empty" if not dom_markdown else f"{len(dom_markdown)}chars",
+            )
+        return chosen
+
     async def chat_completion(
         self,
         payload: dict[str, Any],
@@ -589,6 +893,8 @@ class BrowserDeepSeekClient:
             if should_new_chat:
                 await self._start_new_conversation(page)
                 self._active_session_id = sid
+                self._applied_web_mode = None
+                self._applied_deep_thinking = None
             elif sid and not self._active_session_id:
                 self._active_session_id = sid
             if sid:
@@ -598,9 +904,26 @@ class BrowserDeepSeekClient:
                 web_mode=web_mode or self.default_web_mode,
                 deep_thinking=self.default_deep_thinking if deep_thinking is None else deep_thinking,
             )
+            await asyncio.sleep(0.2)
             if not should_new_chat:
                 await self._wait_for_generation_idle(page)
-            input_box = page.locator(self.input_selector).first
+            input_box = await self._resolve_input_box(page, timeout_ms=3_000)
+            if not await self._locator_is_visible(input_box):
+                await self._dismiss_overlays(page)
+                input_box = await self._resolve_input_box(page, timeout_ms=3_000)
+            if not await self._locator_is_visible(input_box) and not should_new_chat:
+                logger.warning("browser.input still_hidden; recovering with new_chat")
+                await self._start_new_conversation(page)
+                self._applied_web_mode = None
+                self._applied_deep_thinking = None
+                await self._apply_chat_options(
+                    page,
+                    web_mode=web_mode or self.default_web_mode,
+                    deep_thinking=(
+                        self.default_deep_thinking if deep_thinking is None else deep_thinking
+                    ),
+                )
+                input_box = await self._resolve_input_box(page, timeout_ms=10_000)
             answer_blocks = page.locator(self.answer_selector)
             before_count, before_last_text = await self._last_answer_snapshot(answer_blocks)
             logger.info(
@@ -611,7 +934,8 @@ class BrowserDeepSeekClient:
             )
             await self._send_message(page, input_box, prompt)
             await self._wait_for_new_answer(page, answer_blocks, before_count, before_last_text)
-            return await self._wait_until_answer_stable(answer_blocks)
+            rendered = await self._wait_until_answer_stable(answer_blocks)
+            return await self._extract_answer_markdown(page, answer_blocks, rendered)
 
     async def _wait_for_new_answer(
         self,

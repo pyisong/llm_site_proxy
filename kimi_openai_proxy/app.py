@@ -473,7 +473,13 @@ def create_app(
     upstream_client: httpx.AsyncClient | None = None,
     browser_backend: Any | None = None,
 ) -> FastAPI:
-    logging.basicConfig(level=os.getenv("KIMI_LOG_LEVEL", "INFO"))
+    try:
+        from .logging_setup import configure_logging, is_quiet_http_path
+    except ImportError:
+        from logging_setup import configure_logging, is_quiet_http_path
+
+    configure_logging(env_var="KIMI_LOG_LEVEL")
+
     local_api_key = local_api_key if local_api_key is not None else os.getenv("KIMI_PROXY_API_KEY", "local-secret")
     kimi_api_key = kimi_api_key if kimi_api_key is not None else os.getenv("KIMI_API_KEY")
     kimi_base_url = os.getenv("KIMI_BASE_URL", kimi_base_url).rstrip("/")
@@ -506,29 +512,32 @@ def create_app(
 
     @app.middleware("http")
     async def log_http_requests(request: Request, call_next):
+        quiet = is_quiet_http_path(request.method, request.url.path)
         start = time.perf_counter()
         body = await request.body()
-        logger.info(
-            "request.start method=%s path=%s query=%s headers=%s body=%s",
-            request.method,
-            request.url.path,
-            _truncate(request.url.query or ""),
-            _json_for_log(_safe_headers(dict(request.headers))),
-            _request_body_for_log(body),
-        )
+        if not quiet:
+            logger.info(
+                "request.start method=%s path=%s query=%s headers=%s body=%s",
+                request.method,
+                request.url.path,
+                _truncate(request.url.query or ""),
+                _json_for_log(_safe_headers(dict(request.headers))),
+                _request_body_for_log(body),
+            )
         try:
             response = await call_next(request)
         except Exception:
             logger.exception("request.error method=%s path=%s", request.method, request.url.path)
             raise
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        logger.info(
-            "request.end method=%s path=%s status=%s duration_ms=%s",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-        )
+        if not quiet:
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            logger.info(
+                "request.end method=%s path=%s status=%s duration_ms=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+            )
         return response
 
     @app.exception_handler(HTTPException)

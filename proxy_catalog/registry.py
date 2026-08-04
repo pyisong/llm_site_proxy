@@ -53,6 +53,12 @@ class ProxyService:
     def probe_base(self) -> str:
         return f"http://{self.probe_host}:{self.probe_port}"
 
+    def internal_base_url(self) -> str:
+        """Docker DNS 地址（同 llm_site_proxy_net 内可达）。"""
+        if self.api_prefix:
+            return f"{self.probe_base}{self.api_prefix}"
+        return self.probe_base
+
     def public_base_url(self, public_host: str) -> str:
         root = f"http://{public_host}:{self.public_port}"
         if self.api_prefix:

@@ -87,6 +87,7 @@ async def _probe_one(
         "name": svc.name,
         "status": status,
         "base_url": svc.public_base_url(public_host),
+        "internal_base_url": svc.internal_base_url(),
         "capabilities": list(svc.capabilities),
         "endpoints": svc.endpoints.as_dict(),
         "models": models,
@@ -107,6 +108,7 @@ def _by_capability(services: list[dict[str, Any]]) -> dict[str, list[dict[str, A
             "id": svc["id"],
             "name": svc["name"],
             "base_url": svc["base_url"],
+            "internal_base_url": svc.get("internal_base_url"),
             "endpoints": svc.get("endpoints") or {},
             "models": svc.get("models") or [],
         }
@@ -132,6 +134,12 @@ async def discover_services(public_host: str) -> dict[str, Any]:
 
 
 def create_app() -> FastAPI:
+    try:
+        from .logging_setup import configure_logging
+    except ImportError:
+        from logging_setup import configure_logging
+
+    configure_logging(env_var="CATALOG_LOG_LEVEL")
     app = FastAPI(title="llm_site_proxy catalog", version="1.0.0")
 
     @app.get("/health")

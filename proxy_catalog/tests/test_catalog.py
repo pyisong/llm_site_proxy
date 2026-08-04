@@ -37,6 +37,7 @@ def test_services_live_probe_and_by_capability(monkeypatch):
 
     qwen = next(s for s in payload["services"] if s["id"] == "qwen-openai-proxy")
     assert qwen["base_url"] == "http://10.1.10.113:18005/v1"
+    assert qwen["internal_base_url"] == "http://qwen-openai-proxy:8000/v1"
     assert set(qwen["capabilities"]) == {"llm", "image", "video"}
     assert qwen["models"][0]["id"] == "qwen-openai-proxy-model"
 
