@@ -170,7 +170,10 @@ BUSY_MODAL_DISMISS_SELECTORS = [
     '.modal-mask button:has-text("取消")',
     '.modal-mask button:has-text("稍后")',
     '.modal-mask [class*="close"]',
+    '.modal-mask [aria-label*="关闭"]',
+    '.modal-mask [aria-label*="Close"]',
     '.modal-mask .bottom button',
+    '.modal-mask button',
 ]
 
 
@@ -847,11 +850,25 @@ class BrowserKimiClient:
                 continue
         return None
 
-    async def _dismiss_busy_modal(self, page: Any) -> bool:
-        text = await self._busy_modal_text(page)
-        if not text:
+    async def _modal_mask_visible(self, page: Any) -> bool:
+        locator = page.locator(".modal-mask")
+        try:
+            count = await locator.count()
+        except Exception:
             return False
-        logger.warning("browser.busy_modal dismiss content=%s", text[:160])
+        for index in range(count):
+            try:
+                if await locator.nth(index).is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _dismiss_blocking_modal(self, page: Any) -> bool:
+        """Dismiss any blocking .modal-mask (promo ads, not just busy prompts)."""
+        if not await self._modal_mask_visible(page):
+            return False
+        logger.warning("browser.modal dismiss blocking_overlay")
         for selector in BUSY_MODAL_DISMISS_SELECTORS:
             locator = page.locator(selector)
             try:
@@ -859,7 +876,7 @@ class BrowserKimiClient:
                     continue
                 await locator.first.click(timeout=2_000)
                 await asyncio.sleep(0.4)
-                if not await self._busy_modal_text(page):
+                if not await self._modal_mask_visible(page):
                     return True
             except Exception:
                 continue
@@ -868,10 +885,55 @@ class BrowserKimiClient:
             await asyncio.sleep(0.4)
         except Exception:
             pass
-        return await self._busy_modal_text(page) is None
+        if not await self._modal_mask_visible(page):
+            return True
+        try:
+            await page.evaluate(
+                """() => {
+                    for (const el of document.querySelectorAll('.modal-mask')) {
+                        el.style.display = 'none';
+                        el.remove();
+                    }
+                }"""
+            )
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+        return not await self._modal_mask_visible(page)
+
+    async def _dismiss_busy_modal(self, page: Any) -> bool:
+        text = await self._busy_modal_text(page)
+        if not text:
+            # Still clear non-busy overlays that block the chat input.
+            return await self._dismiss_blocking_modal(page)
+        logger.warning("browser.busy_modal dismiss content=%s", text[:160])
+        dismissed = False
+        for selector in BUSY_MODAL_DISMISS_SELECTORS:
+            locator = page.locator(selector)
+            try:
+                if await locator.count() == 0:
+                    continue
+                await locator.first.click(timeout=2_000)
+                await asyncio.sleep(0.4)
+                if not await self._busy_modal_text(page):
+                    dismissed = True
+                    break
+            except Exception:
+                continue
+        if not dismissed:
+            try:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.4)
+            except Exception:
+                pass
+            dismissed = await self._busy_modal_text(page) is None
+        if await self._modal_mask_visible(page):
+            await self._dismiss_blocking_modal(page)
+        return dismissed or not await self._modal_mask_visible(page)
 
     async def _send_message(self, page: Any, input_box: Any, prompt: str) -> None:
         await self._dismiss_busy_modal(page)
+        await self._dismiss_blocking_modal(page)
         await self._scroll_chat_to_bottom(page)
         try:
             await input_box.click(timeout=5_000)
@@ -879,7 +941,15 @@ class BrowserKimiClient:
             modal_text = await self._busy_modal_text(page)
             if modal_text or is_kimi_busy_error_text(str(exc)):
                 raise KimiBusyError(modal_text or str(exc)) from exc
-            raise
+            logger.info("browser.input click intercepted, dismissing overlay then force-click")
+            await self._dismiss_blocking_modal(page)
+            try:
+                await input_box.click(timeout=5_000, force=True)
+            except Exception as retry_exc:
+                modal_text = await self._busy_modal_text(page)
+                if modal_text or is_kimi_busy_error_text(str(retry_exc)):
+                    raise KimiBusyError(modal_text or str(retry_exc)) from retry_exc
+                raise
         await input_box.fill("")
         await input_box.fill(prompt)
         await asyncio.sleep(0.15)

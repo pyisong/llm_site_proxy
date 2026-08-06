@@ -480,11 +480,14 @@ async def test_send_message_retries_click_with_force_when_intercepted():
     client = BrowserStepFunClient(user_data_dir="/tmp/test-profile")
     page = MagicMock()
     page.evaluate = AsyncMock()
+    page.url = "https://chat.stepfun.com/chats/new"
     input_box = FakeLocator()
     input_box.click = AsyncMock(side_effect=[TimeoutError("intercepted"), None])
     input_box.fill = AsyncMock()
     input_box.press = AsyncMock()
     client._input_text = AsyncMock(return_value="")
+    client._is_generation_active = AsyncMock(return_value=False)
+    client._click_send_button = AsyncMock(return_value=True)
 
     await client._send_message(page, input_box, "hello")
 
@@ -506,11 +509,53 @@ async def test_send_message_clicks_send_button_before_enter():
     input_box.click = AsyncMock()
     input_box.fill = AsyncMock()
     input_box.press = AsyncMock()
+    client._input_text = AsyncMock(return_value="")
+    client._is_generation_active = AsyncMock(return_value=False)
 
     await client._send_message(page, input_box, "hello")
 
     assert send_button.clicked is True
     input_box.press.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_send_message_falls_back_to_enter_when_send_button_leaves_text():
+    """Send button click can be a no-op on StepFun; must verify input cleared."""
+    client = BrowserStepFunClient(user_data_dir="/tmp/test-profile")
+    page = FakePage(url="https://chat.stepfun.com/chats/new")
+    page.evaluate = AsyncMock()
+    send_button = FakeLocator()
+    page._locators["button:has(.custom-icon-send-outline):not([disabled])"] = send_button
+    input_box = FakeLocator()
+    input_box.click = AsyncMock()
+    input_box.fill = AsyncMock()
+    input_box.press = AsyncMock()
+    # First check after send button: still has text; after Enter: cleared.
+    client._input_text = AsyncMock(side_effect=["hello", ""])
+    client._is_generation_active = AsyncMock(return_value=False)
+
+    await client._send_message(page, input_box, "hello")
+
+    assert send_button.clicked is True
+    input_box.press.assert_awaited_once_with("Enter")
+
+
+@pytest.mark.anyio
+async def test_send_message_raises_when_click_does_not_submit():
+    client = BrowserStepFunClient(user_data_dir="/tmp/test-profile")
+    page = FakePage(url="https://chat.stepfun.com/chats/new")
+    page.evaluate = AsyncMock()
+    send_button = FakeLocator()
+    page._locators["button:has(.custom-icon-send-outline):not([disabled])"] = send_button
+    input_box = FakeLocator()
+    input_box.click = AsyncMock()
+    input_box.fill = AsyncMock()
+    input_box.press = AsyncMock()
+    client._input_text = AsyncMock(return_value="hello")
+    client._is_generation_active = AsyncMock(return_value=False)
+
+    with pytest.raises(RuntimeError, match="未能发送"):
+        await client._send_message(page, input_box, "hello")
 
 
 @pytest.mark.anyio
@@ -628,6 +673,34 @@ async def test_chat_completion_salvages_answer_before_retry():
     client._start_new_conversation.assert_awaited()  # initial new chat
     # Should not start a second conversation for retry after salvage
     assert client._start_new_conversation.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_chat_completion_retries_on_send_failure():
+    client = BrowserStepFunClient(user_data_dir="/tmp/test-profile", max_retries=2)
+    page = FakePage()
+    client._ensure_page = AsyncMock(return_value=page)
+    client._start_new_conversation = AsyncMock()
+    client._apply_chat_options = AsyncMock()
+    client._find_input_box = AsyncMock(return_value=FakeLocator())
+    client._send_message = AsyncMock(
+        side_effect=[
+            RuntimeError("消息未能发送：输入框在发送后仍有内容，且未检测到生成开始 (remaining_chars=5)"),
+            None,
+        ]
+    )
+    client._last_answer_snapshot = AsyncMock(return_value=(0, ""))
+    client._resolve_answer_text = AsyncMock(return_value="")
+    client._wait_for_new_answer = AsyncMock()
+    client._wait_until_answer_stable = AsyncMock(return_value="你好")
+
+    result = await client.chat_completion(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        new_chat=True,
+    )
+    assert result == "你好"
+    assert client._send_message.await_count == 2
+    assert client._start_new_conversation.await_count == 2
 
 
 def test_from_env_idle_timeout_defaults(monkeypatch):

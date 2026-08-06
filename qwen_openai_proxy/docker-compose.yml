@@ -22,7 +22,7 @@ services:
       QWEN_VIDEO_TIMEOUT: "1800"
       QWEN_NEW_CHAT_PER_REQUEST: "1"
       QWEN_LOG_LEVEL: INFO
-      QWEN_LOG_MAX_CHARS: "500"
+      QWEN_LOG_MAX_CHARS: "400"
     volumes:
       - ./secrets:/run/secrets:ro
 

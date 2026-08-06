@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="Proxy Console">
+  <rect width="64" height="64" rx="14" fill="#12161b"/>
+  <rect x="1" y="1" width="62" height="62" rx="13" stroke="#2bb8c8" stroke-opacity="0.35" stroke-width="2"/>
+  <!-- left node -->
+  <circle cx="16" cy="32" r="5" fill="#2bb8c8"/>
+  <!-- right node -->
+  <circle cx="48" cy="32" r="5" fill="#2bb8c8"/>
+  <!-- proxy hub -->
+  <rect x="26" y="22" width="12" height="20" rx="3" fill="#1a6f79"/>
+  <rect x="28" y="25" width="8" height="3" rx="1" fill="#2bb8c8" fill-opacity="0.9"/>
+  <rect x="28" y="30.5" width="8" height="3" rx="1" fill="#2bb8c8" fill-opacity="0.55"/>
+  <rect x="28" y="36" width="8" height="3" rx="1" fill="#2bb8c8" fill-opacity="0.35"/>
+  <!-- links -->
+  <path d="M21 32H26" stroke="#2bb8c8" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M38 32H43" stroke="#2bb8c8" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

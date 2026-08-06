@@ -5,7 +5,7 @@ FROM python:3.12-slim-bookworm
 ARG INSTALL_CURSOR=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ "$INSTALL_CURSOR" = "1" ]; then \
@@ -23,7 +23,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-COPY cursor_automation.py openai_bridge.py image_generation.py log_utils.py ./
+COPY cursor_automation.py openai_bridge.py image_generation.py log_utils.py skills_store.py skill_usage.py skills_jobs.py console_ingest.py ./
 
 EXPOSE 8765
 

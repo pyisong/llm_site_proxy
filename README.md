@@ -42,12 +42,18 @@ curl -s 'http://10.1.10.113:18010/v1/services?capability=image' | python3 -m jso
 | 服务 | 端口 |
 |------|------|
 | proxy-catalog | 18010 |
+| proxy-console | 18020 |
+| proxy-console-db (Postgres) | 5433→5432 |
 | deepseek-openai-proxy | 18002 |
 | kimi-openai-proxy | 18003 |
 | stepfun-openai-proxy | 18004 |
 | qwen-openai-proxy | 18005 |
 | cursor-openai-bridge | 8765 |
 | azure-tts-http-api | 8787 |
+
+运维台见 `proxy_console/README.md`（Overview / Connectivity / Skills，Postgres 持久化）。
+
+可选：`macos_cursor_automation` 支持全局 Skills（宿主机 `cursor_skills/` → 容器 `/root/.cursor/skills`），见该子目录 README「全局 Skills」。
 
 各子目录仍可单独 `docker compose up`；生产推荐只用根目录 `docker-compose.start-all.yml`。
 

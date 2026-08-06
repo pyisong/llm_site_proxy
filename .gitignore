@@ -51,6 +51,11 @@ macos_cursor_automation/outputs/
 macos_cursor_automation/test/
 .DS_Store
 
+# Global Cursor skills store (persist locally; keep README + .gitkeep)
+cursor_skills/*
+!cursor_skills/.gitkeep
+!cursor_skills/README.md
+
 # Editors / misc
 .idea/
 .vscode/

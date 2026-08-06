@@ -24,7 +24,7 @@ BROWSER_MODELS = [
 ]
 LOGGER_NAME = "deepseek_openai_proxy"
 logger = logging.getLogger(LOGGER_NAME)
-_LOG_MAX_CHARS = max(0, int(os.getenv("DEEPSEEK_LOG_MAX_CHARS", "500")))
+_LOG_MAX_CHARS = max(0, int(os.getenv("DEEPSEEK_LOG_MAX_CHARS", "400")))
 
 
 def _error(status_code: int, message: str, error_type: str) -> JSONResponse:
@@ -40,7 +40,30 @@ def _truncate(value: str, limit: int | None = None) -> str:
         return "<omitted>"
     if len(value) <= max_chars:
         return value
-    return f"{value[:max_chars]}...<truncated {len(value) - max_chars} chars>"
+    total = len(value)
+    probe = f"...<省略中间 omitted={total} total={total}>..."
+    if len(probe) >= max_chars:
+        return value[: max(0, max_chars - 3)] + "..."
+    keep = max_chars - len(probe)
+    head = keep // 2
+    tail = keep - head
+    omitted = total - head - tail
+    marker = f"...<省略中间 omitted={omitted} total={total}>..."
+    while head + tail + len(marker) > max_chars and (head > 0 or tail > 0):
+        if head >= tail and head > 0:
+            head -= 1
+        elif tail > 0:
+            tail -= 1
+        else:
+            break
+        omitted = total - head - tail
+        marker = f"...<省略中间 omitted={omitted} total={total}>..."
+    if head + tail + len(marker) > max_chars:
+        return value[: max(0, max_chars - 3)] + "..."
+    if tail > 0:
+        return f"{value[:head]}{marker}{value[-tail:]}"
+    return f"{value[:head]}{marker}"
+
 
 
 def _json_for_log(payload: Any) -> str:
@@ -384,6 +407,13 @@ def create_app(
                 await browser_backend.aclose()
 
     app = FastAPI(title="deepseek-openai-proxy", version="0.1.0", lifespan=lifespan)
+
+    try:
+        from .console_ingest import install_console_ingest_middleware
+    except ImportError:
+        from console_ingest import install_console_ingest_middleware
+
+    install_console_ingest_middleware(app, proxy_id="deepseek-openai-proxy")
 
     @app.middleware("http")
     async def log_http_requests(request: Request, call_next):

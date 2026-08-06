@@ -576,6 +576,23 @@ class BrowserStepFunClient:
         if deep_thinking is not None:
             await self._set_deep_thinking(page, deep_thinking)
 
+    async def _message_seems_sent(self, page: Any, input_box: Any) -> bool:
+        """Return True when send likely took effect.
+
+        StepFun sometimes accepts a send-button click as a Playwright success
+        while the chat never submits (React state not synced). Treat cleared
+        input, active generation, or leaving /chats/new as success signals.
+        """
+        if await self._is_generation_active(page):
+            return True
+        remaining = await self._input_text(input_box)
+        if not remaining:
+            return True
+        url = str(getattr(page, "url", "") or "")
+        if "/chats/" in url and not url.rstrip("/").endswith("/chats/new"):
+            return True
+        return False
+
     async def _send_message(self, page: Any, input_box: Any, prompt: str) -> None:
         await self._scroll_chat_to_bottom(page)
         try:
@@ -586,16 +603,26 @@ class BrowserStepFunClient:
         await input_box.fill("")
         await input_box.fill(prompt)
         await self._dispatch_input_events(page)
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.25)
         if await self._click_send_button(page):
-            return
+            await asyncio.sleep(0.5)
+            if await self._message_seems_sent(page, input_box):
+                return
+            logger.info("browser.send button click left input uncleared, trying Enter")
         await input_box.press("Enter")
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.5)
+        if await self._message_seems_sent(page, input_box):
+            return
+        logger.info("browser.send enter did not clear input, trying send button")
+        if await self._click_send_button(page):
+            await asyncio.sleep(0.5)
+            if await self._message_seems_sent(page, input_box):
+                return
         remaining = await self._input_text(input_box)
-        if remaining:
-            logger.info("browser.send enter did not clear input, trying send button")
-            if not await self._click_send_button(page):
-                raise RuntimeError("消息未能发送：输入框在 Enter 后仍有内容，且未找到发送按钮")
+        raise RuntimeError(
+            "消息未能发送：输入框在发送后仍有内容，且未检测到生成开始 "
+            f"(remaining_chars={len(remaining)})"
+        )
 
     async def _dispatch_input_events(self, page: Any) -> None:
         try:
@@ -897,6 +924,15 @@ class BrowserStepFunClient:
                             exc,
                         )
                         return salvaged
+                    if attempt >= self.max_retries:
+                        raise
+                except RuntimeError as exc:
+                    # Send no-op / UI race: retry on a fresh conversation instead of
+                    # burning STEPFUN_BROWSER_START_TIMEOUT waiting for nothing.
+                    if "未能发送" not in str(exc):
+                        raise
+                    last_error = exc
+                    logger.warning("browser.send_failed attempt=%s/%s err=%s", attempt, self.max_retries, exc)
                     if attempt >= self.max_retries:
                         raise
             assert last_error is not None

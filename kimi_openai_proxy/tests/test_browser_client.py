@@ -585,6 +585,7 @@ async def test_send_message_raises_busy_when_modal_blocks_click():
         )
     )
     client._dismiss_busy_modal = AsyncMock(return_value=False)
+    client._dismiss_blocking_modal = AsyncMock(return_value=False)
     client._scroll_chat_to_bottom = AsyncMock()
     client._busy_modal_text = AsyncMock(
         return_value="和Kimi聊天的人太多啦，订阅会员可进入独立的优先队列～"
@@ -592,6 +593,71 @@ async def test_send_message_raises_busy_when_modal_blocks_click():
 
     with pytest.raises(KimiBusyError):
         await client._send_message(page, input_box, "hi")
+
+
+@pytest.mark.anyio
+async def test_send_message_dismisses_promo_modal_and_force_clicks():
+    """Promo modal-mask/image overlays block input; dismiss + force-click must recover."""
+    client = BrowserKimiClient(user_data_dir="/tmp/test-profile")
+    page = FakePage(url="https://www.kimi.com/")
+    send_button = FakeLocator()
+    page._locators[".send-button-container:not(.disabled)"] = send_button
+    input_box = MagicMock()
+    input_box.click = AsyncMock(
+        side_effect=[
+            TimeoutError(
+                'Locator.click: Timeout 5000ms exceeded.\n'
+                '<img class="image-main"/> from <div class="modal-mask"> subtree intercepts pointer events'
+            ),
+            None,
+        ]
+    )
+    input_box.fill = AsyncMock()
+    input_box.press = AsyncMock()
+    client._dismiss_busy_modal = AsyncMock(return_value=False)
+    client._dismiss_blocking_modal = AsyncMock(return_value=True)
+    client._scroll_chat_to_bottom = AsyncMock()
+    client._busy_modal_text = AsyncMock(return_value=None)
+
+    await client._send_message(page, input_box, "hi")
+
+    assert client._dismiss_blocking_modal.await_count >= 2
+    assert input_box.click.await_args_list[-1].kwargs.get("force") is True
+    assert send_button.clicked is True
+
+
+@pytest.mark.anyio
+async def test_dismiss_blocking_modal_hides_visible_mask():
+    client = BrowserKimiClient(user_data_dir="/tmp/test-profile")
+    page = MagicMock()
+    mask = MagicMock()
+    mask.count = AsyncMock(return_value=1)
+    mask.first = mask
+    mask.is_visible = AsyncMock(return_value=True)
+    mask.nth = MagicMock(return_value=mask)
+    dismiss_btn = MagicMock()
+    dismiss_btn.count = AsyncMock(return_value=1)
+    dismiss_btn.first = dismiss_btn
+    dismiss_btn.click = AsyncMock()
+
+    def locator(selector: str):
+        if selector == ".modal-mask":
+            return mask
+        if "知道了" in selector or "close" in selector or selector.startswith(".modal-mask"):
+            return dismiss_btn
+        return MagicMock(count=AsyncMock(return_value=0))
+
+    page.locator = MagicMock(side_effect=locator)
+    page.keyboard = MagicMock()
+    page.keyboard.press = AsyncMock()
+    page.evaluate = AsyncMock()
+
+    # After dismiss click, mask gone
+    visible_states = [True, False]
+    mask.is_visible = AsyncMock(side_effect=lambda: visible_states.pop(0) if visible_states else False)
+
+    assert await client._dismiss_blocking_modal(page) is True
+    dismiss_btn.click.assert_awaited()
 
 
 @pytest.mark.anyio

@@ -6,11 +6,12 @@
 ``POST /v1/chat/completions`` 在 ``stream: true`` 时使用 ``cursor agent --output-format stream-json
 --stream-partial-output``，将增量文本映射为 OpenAI 兼容的 SSE（``text/event-stream``）。
 
-每次 HTTP 请求在日志侧使用独立 ``req_id``（UUID），并在调用 ``cursor agent`` 时附加 ``--force``，
-避免同一 ``workspace`` 下复用上一轮 Agent 会话上下文。
+每次 HTTP 请求在日志侧使用独立 ``req_id``（UUID）。调用 ``cursor agent`` 时：
+默认附加 ``--force``（新开会话）；若 ``metadata.force=false`` 则不传 ``--force``，在同一工作区续聊。
 
-默认（``CURSOR_BRIDGE_ISOLATE_WORKSPACE=1``）将 agent 工作区设为 ``<serve -w>/jobs/<req_id>``，
-避免并发或多篇生成共享同一目录导致产物/上下文污染；可用 ``metadata.workspace`` 覆盖，
+默认（``CURSOR_BRIDGE_ISOLATE_WORKSPACE=1``）将 agent 工作区设为 ``<serve -w>/jobs/<key>``：
+``key`` 优先取 ``metadata.session_id`` / ``cursor_session_id`` / ``task_id``（同任务复用），
+否则用本请求 ``req_id``。可用 ``metadata.workspace`` 覆盖，
 或 ``metadata.isolate_workspace: false`` / 环境变量 ``CURSOR_BRIDGE_ISOLATE_WORKSPACE=0`` 关闭。
 
 ``POST /v1/chat/completions`` 与 ``POST /v1/messages``：请求体根级可选 ``metadata``，其中
@@ -56,7 +57,7 @@
 - ``CURSOR_BRIDGE_LOG_LEVEL``：详细日志级别（默认 ``INFO``）。
 - ``CURSOR_BRIDGE_LOG_DIR``：桥接业务日志目录（默认 ``logs``，写入 ``cursor_openai_bridge.log``；设为空则仅控制台）。
 - ``CURSOR_BRIDGE_LOG_FILE_MAX_BYTES`` / ``CURSOR_BRIDGE_LOG_FILE_BACKUP_COUNT``：业务日志轮转大小与备份个数（默认 ``10485760``、``5``）。
-- ``CURSOR_BRIDGE_LOG_MAX_CHARS``：单条日志最大字符（默认 ``8192``）；``0`` 表示不截断（大 base64 慎用）。
+- ``CURSOR_BRIDGE_LOG_MAX_CHARS``：单条日志最大字符（默认 ``2048``，超长保留首尾省略中间）；``0`` 表示不截断（大 base64 慎用）。
 - ``CURSOR_BRIDGE_LOG_AGENT_PROMPT``：设为 ``1`` 时额外打印发给 agent 的完整 prompt（同样受 MAX_CHARS 截断）。
 - ``CURSOR_BRIDGE_LOG_AGENT_SUBPROCESS``：设为 ``1`` 时对所有 ``run_cursor_agent`` 使用 ``Popen`` 监控：心跳、超时杀进程并打 stdout/stderr 尾部。
 - ``CURSOR_BRIDGE_AGENT_PROGRESS_INTERVAL_SEC``：子进程监控心跳间隔（秒，默认 ``30``，最小 ``5``）。
@@ -65,6 +66,9 @@
 - ``CURSOR_BRIDGE_ISOLATE_WORKSPACE``：设为 ``0``/``false`` 时不在 ``jobs/<req_id>`` 下隔离工作区（默认 ``1`` 开启）。
 - ``CURSOR_BRIDGE_LOG_IMAGE_B64_PREVIEW``：``images/generations`` 响应日志里 ``url``/``b64_json`` 中 base64
   只保留前 N 个字符（默认 ``96``）；设 ``CURSOR_BRIDGE_LOG_IMAGE_FULL=1`` 则不打码（慎用）。
+- ``CURSOR_SKILLS_DIR``：全局 skills 根目录（默认 ``/root/.cursor/skills``）；``/v1/skills*`` 与用量日志共用。
+- ``CURSOR_SKILLS_ALLOW_REMOTE``：``1`` 时允许 ``git``/``url`` 安装（默认关闭）。
+- ``CURSOR_BRIDGE_LOG_SKILL_USAGE``：chat/messages 结束后记录 skill 使用情况（默认 ``1``；``0`` 关闭）。
 """
 
 from __future__ import annotations
@@ -98,7 +102,24 @@ try:
         resolve_cursor_cli,
         run_cursor_agent,
     )
-    from .log_utils import TruncatingLogFormatter, truncate_log_text
+    from .log_utils import TruncatingLogFormatter, truncate_exc_text, truncate_log_text
+    from .skill_usage import (
+        format_skill_usage_log,
+        infer_skill_usage,
+        skill_usage_logging_enabled,
+    )
+    from .skills_store import (
+        SkillStoreError,
+        delete_skill,
+        generate_skill,
+        get_skill,
+        install,
+        install_from_zip_bytes,
+        installed_skill_names,
+        list_skills,
+    )
+    from .skills_jobs import get_job as get_install_job
+    from .skills_jobs import start_install_job
 except ImportError:
     from cursor_automation import (
         AgentMode,
@@ -110,7 +131,24 @@ except ImportError:
         resolve_cursor_cli,
         run_cursor_agent,
     )
-    from log_utils import TruncatingLogFormatter, truncate_log_text
+    from log_utils import TruncatingLogFormatter, truncate_exc_text, truncate_log_text
+    from skill_usage import (
+        format_skill_usage_log,
+        infer_skill_usage,
+        skill_usage_logging_enabled,
+    )
+    from skills_store import (
+        SkillStoreError,
+        delete_skill,
+        generate_skill,
+        get_skill,
+        install,
+        install_from_zip_bytes,
+        installed_skill_names,
+        list_skills,
+    )
+    from skills_jobs import get_job as get_install_job
+    from skills_jobs import start_install_job
 
 try:
     from .image_generation import (
@@ -131,7 +169,7 @@ except ImportError:
         sd_webui_txt2img_png,
     )
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
@@ -425,6 +463,35 @@ def _job_workspace_dir(default: Path, req_id: str) -> Path:
     return default.expanduser().resolve() / "jobs" / safe
 
 
+def _session_id_from_metadata(metadata: Any) -> str | None:
+    """客户端传入的任务会话 id：同 session 共用 jobs/<id>；新 id 即新会话。"""
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("session_id", "cursor_session_id", "task_id"):
+        raw = metadata.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _agent_force_from_metadata(metadata: Any, *, default: bool = True) -> bool:
+    """``metadata.force``：首轮 true 新开 Agent；同 session 后续 false 续聊。缺省 ``default``。"""
+    if not isinstance(metadata, dict):
+        return default
+    if "force" not in metadata and "cursor_force" not in metadata:
+        return default
+    raw = metadata.get("force")
+    if raw is None:
+        raw = metadata.get("cursor_force")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        return raw.strip().lower() not in ("0", "false", "no", "off", "")
+    return default
+
+
 def _normalize_workspace(
     body: dict[str, Any],
     default: Path,
@@ -438,8 +505,10 @@ def _normalize_workspace(
             return Path(w).expanduser().resolve()
         if meta.get("isolate_workspace") is False:
             return default.expanduser().resolve()
-    if req_id and _workspace_isolation_enabled():
-        return _job_workspace_dir(default, req_id)
+    # 优先 session_id（同任务复用）；否则用本请求 req_id（新 HTTP = 新目录）
+    isolate_key = _session_id_from_metadata(meta if isinstance(meta, dict) else None) or req_id
+    if isolate_key and _workspace_isolation_enabled():
+        return _job_workspace_dir(default, isolate_key)
     return default.expanduser().resolve()
 
 
@@ -971,6 +1040,64 @@ def _normalize_model_for_cursor(model: Any) -> str | None:
     return m or None
 
 
+def _log_skill_usage_for_request(
+    req_id: str,
+    prompt: str,
+    *,
+    agent_stdout: str = "",
+    agent_stderr: str = "",
+    parsed: Any = None,
+) -> None:
+    """附加日志：不改变响应；失败时静默跳过以免影响主路径。"""
+    if not skill_usage_logging_enabled():
+        return
+    try:
+        usage = infer_skill_usage(
+            prompt,
+            agent_stdout=agent_stdout,
+            agent_stderr=agent_stderr,
+            parsed=parsed,
+            installed_names=installed_skill_names(),
+        )
+        _init_bridge_logging().info("%s", format_skill_usage_log(req_id, usage))
+        try:
+            from console_ingest import schedule_skill_usage_ingest
+        except ImportError:
+            schedule_skill_usage_ingest = None  # type: ignore
+        if schedule_skill_usage_ingest is not None:
+            seen: set[str] = set()
+            for name in usage.evidenced:
+                if name and name not in seen:
+                    seen.add(name)
+                    schedule_skill_usage_ingest(
+                        skill_name=name,
+                        label="evidenced",
+                        request_id=req_id,
+                    )
+            for name in usage.requested:
+                if name and name not in seen:
+                    seen.add(name)
+                    schedule_skill_usage_ingest(
+                        skill_name=name,
+                        label="requested",
+                        request_id=req_id,
+                    )
+    except Exception as e:
+        _init_bridge_logging().debug("skill_usage log skipped: %s", e)
+
+
+def _skills_http_error(exc: SkillStoreError) -> JSONResponse:
+    _init_bridge_logging().warning(
+        "skills error status=%s msg=%s",
+        exc.status_code,
+        exc.message,
+    )
+    return JSONResponse(
+        status_code=int(exc.status_code),
+        content=_openai_error(exc.message, type_="invalid_request_error"),
+    )
+
+
 def _anthropic_system_to_text(system: Any) -> str:
     if isinstance(system, str):
         return system.strip()
@@ -1034,6 +1161,13 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    try:
+        from console_ingest import install_console_ingest_middleware
+    except ImportError:
+        from .console_ingest import install_console_ingest_middleware  # type: ignore
+
+    install_console_ingest_middleware(app, proxy_id="cursor-openai-bridge")
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -1107,6 +1241,147 @@ def create_app(
             if isinstance(mid, str) and mid:
                 tags.append({"name": mid})
         return {"models": tags}
+
+    @app.get("/v1/skills")
+    async def skills_list():
+        return {"skills": list_skills()}
+
+    @app.get("/v1/skills/{name}")
+    async def skills_get(name: str, include_body: int = 0):
+        try:
+            item = get_skill(name, include_body=bool(include_body))
+        except SkillStoreError as e:
+            return _skills_http_error(e)
+        if item is None:
+            return JSONResponse(
+                status_code=404,
+                content=_openai_error(f"skill 不存在: {name}", type_="invalid_request_error"),
+            )
+        return item
+
+    @app.post("/v1/skills/install")
+    async def skills_install(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体须为 JSON"),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体格式错误"),
+            )
+        try:
+            meta = install(
+                source=str(body.get("source") or ""),
+                ref=str(body.get("ref") or body.get("path") or body.get("url") or ""),
+                name=(str(body["name"]) if body.get("name") is not None else None),
+                overwrite=bool(body.get("overwrite")),
+                subdir=(str(body["subdir"]) if body.get("subdir") is not None else None),
+                branch=(str(body["branch"]) if body.get("branch") is not None else None),
+                proxy=(str(body["proxy"]) if body.get("proxy") is not None else None),
+            )
+        except SkillStoreError as e:
+            return _skills_http_error(e)
+        return meta
+
+    @app.post("/v1/skills/jobs")
+    async def skills_install_job(request: Request):
+        """异步安装：立即返回 job，后台 git clone（可长达 CURSOR_SKILLS_REMOTE_TIMEOUT）。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体须为 JSON"),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体格式错误"),
+            )
+        job = start_install_job(
+            source=str(body.get("source") or ""),
+            ref=str(body.get("ref") or body.get("path") or body.get("url") or ""),
+            name=(str(body["name"]) if body.get("name") is not None else None),
+            overwrite=bool(body.get("overwrite")),
+            subdir=(str(body["subdir"]) if body.get("subdir") is not None else None),
+            branch=(str(body["branch"]) if body.get("branch") is not None else None),
+            proxy=(str(body["proxy"]) if body.get("proxy") is not None else None),
+        )
+        _init_bridge_logging().info(
+            "skills job accepted id=%s source=%s ref=%s",
+            job.get("id"),
+            body.get("source"),
+            body.get("ref") or body.get("path") or body.get("url"),
+        )
+        return JSONResponse(status_code=202, content=job)
+
+    @app.get("/v1/skills/jobs/{job_id}")
+    async def skills_install_job_get(job_id: str):
+        job = get_install_job(job_id)
+        if not job:
+            return JSONResponse(
+                status_code=404,
+                content=_openai_error(f"job 不存在: {job_id}", type_="invalid_request_error"),
+            )
+        return job
+
+    @app.post("/v1/skills/upload")
+    async def skills_upload(
+        file: UploadFile = File(...),
+        name: str | None = Form(None),
+        overwrite: bool = Form(False),
+        subdir: str | None = Form(None),
+    ):
+        raw = await file.read()
+        try:
+            meta = await asyncio.to_thread(
+                install_from_zip_bytes,
+                raw,
+                name=(name.strip() if name else None) or None,
+                overwrite=bool(overwrite),
+                subdir=(subdir.strip() if subdir else None) or None,
+            )
+        except SkillStoreError as e:
+            return _skills_http_error(e)
+        return meta
+
+    @app.post("/v1/skills/generate")
+    async def skills_generate(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体须为 JSON"),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体格式错误"),
+            )
+        try:
+            meta = await asyncio.to_thread(
+                generate_skill,
+                str(body.get("prompt") or ""),
+                name=str(body.get("name") or ""),
+                overwrite=bool(body.get("overwrite")),
+                agent_timeout=agent_timeout,
+            )
+        except SkillStoreError as e:
+            return _skills_http_error(e)
+        return meta
+
+    @app.delete("/v1/skills/{name}")
+    async def skills_delete(name: str):
+        try:
+            delete_skill(name)
+        except SkillStoreError as e:
+            return _skills_http_error(e)
+        return JSONResponse(status_code=200, content={"ok": True, "deleted": name})
 
     @app.post("/v1/images/generations")
     async def images_generations(request: Request):
@@ -1848,10 +2123,15 @@ def create_app(
 
         workspace = _normalize_workspace(body, default_workspace, req_id=req_id)
         workspace.mkdir(parents=True, exist_ok=True)
+        chat_meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        chat_force = _agent_force_from_metadata(chat_meta, default=True)
+        session_key = _session_id_from_metadata(chat_meta) or req_id
         if _workspace_isolation_enabled() and workspace != default_workspace.expanduser().resolve():
             _init_bridge_logging().debug(
-                "chat/completions workspace id=%s path=%s",
+                "chat/completions workspace req_id=%s session=%s force=%s path=%s",
                 req_id,
+                session_key,
+                chat_force,
                 workspace,
             )
         want_stream = body.get("stream") is True
@@ -1888,6 +2168,7 @@ def create_app(
             now = int(time.time())
 
             async def sse_gen() -> Any:
+                evidence_bits: list[str] = []
                 try:
                     yield _chat_sse_chunk(
                         cid=cid, created=now, model=str(model), delta={"role": "assistant"}
@@ -1899,10 +2180,14 @@ def create_app(
                             workspace=workspace,
                             trust=True,
                             mode=chat_cli_mode,
-                            force=True,
+                            force=chat_force,
                             model=agent_model,
                             timeout=agent_timeout,
                         ):
+                            try:
+                                evidence_bits.append(json.dumps(obj, ensure_ascii=False, default=str))
+                            except Exception:
+                                evidence_bits.append(str(obj))
                             snap = agent_stream_object_text(obj)
                             if not isinstance(snap, str):
                                 snap = ""
@@ -1934,6 +2219,11 @@ def create_app(
                     )
                     yield b"data: [DONE]\n\n"
                 finally:
+                    _log_skill_usage_for_request(
+                        req_id,
+                        prompt,
+                        agent_stdout="\n".join(evidence_bits),
+                    )
                     if media_root is not None and media_root.is_dir():
                         try:
                             shutil.rmtree(media_root, ignore_errors=True)
@@ -1979,12 +2269,30 @@ def create_app(
                     output_format="json",
                     trust=True,
                     mode=chat_cli_mode,
-                    force=True,
+                    force=chat_force,
                     timeout=agent_timeout,
                     model=agent_model,
                 )
 
-            result = await asyncio.to_thread(_run)
+            try:
+                result = await asyncio.to_thread(_run)
+            except subprocess.TimeoutExpired as e:
+                _log_skill_usage_for_request(req_id, prompt)
+                err_msg = truncate_exc_text(e, max_chars=1200)
+                _init_bridge_logging().warning(
+                    "chat/completions TIMEOUT id=%s %s", req_id, err_msg
+                )
+                return respond(
+                    _openai_error(err_msg, type_="timeout_error"),
+                    http_status=504,
+                )
+            _log_skill_usage_for_request(
+                req_id,
+                prompt,
+                agent_stdout=result.stdout or "",
+                agent_stderr=result.stderr or "",
+                parsed=result.parsed,
+            )
             if result.returncode != 0:
                 msg = (result.stderr or result.stdout or "agent 失败").strip()
                 err_payload = _openai_error(msg[:8000], type_="api_error")
@@ -2089,10 +2397,15 @@ def create_app(
 
         workspace = _normalize_workspace(body, default_workspace, req_id=req_id)
         workspace.mkdir(parents=True, exist_ok=True)
+        msg_meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        msg_force = _agent_force_from_metadata(msg_meta, default=True)
+        msg_session = _session_id_from_metadata(msg_meta) or req_id
         if _workspace_isolation_enabled() and workspace != default_workspace.expanduser().resolve():
             _init_bridge_logging().debug(
-                "messages workspace id=%s path=%s",
+                "messages workspace req_id=%s session=%s force=%s path=%s",
                 req_id,
+                msg_session,
+                msg_force,
                 workspace,
             )
         want_stream = body.get("stream") is True
@@ -2123,6 +2436,7 @@ def create_app(
                 )
 
                 async def a_sse() -> Any:
+                    evidence_bits: list[str] = []
                     yield (
                         f'event: message_start\ndata: {json.dumps({"type":"message_start","message":{"id":msg_id,"type":"message","role":"assistant","model":str(model),"content":[],"stop_reason":None,"stop_sequence":None,"usage":{"input_tokens":0,"output_tokens":0}}}, ensure_ascii=False)}\n\n'
                     ).encode("utf-8")
@@ -2136,10 +2450,14 @@ def create_app(
                             workspace=workspace,
                             trust=True,
                             mode=anthropic_cli_mode,
-                            force=True,
+                            force=msg_force,
                             model=agent_model,
                             timeout=agent_timeout,
                         ):
+                            try:
+                                evidence_bits.append(json.dumps(obj, ensure_ascii=False, default=str))
+                            except Exception:
+                                evidence_bits.append(str(obj))
                             snap = agent_stream_object_text(obj)
                             if not isinstance(snap, str):
                                 snap = ""
@@ -2162,6 +2480,11 @@ def create_app(
                     yield b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
                     yield b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}\n\n'
                     yield b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+                    _log_skill_usage_for_request(
+                        req_id,
+                        prompt,
+                        agent_stdout="\n".join(evidence_bits),
+                    )
 
                 return StreamingResponse(a_sse(), media_type="text/event-stream; charset=utf-8")
 
@@ -2172,9 +2495,16 @@ def create_app(
                     output_format="json",
                     trust=True,
                     mode=anthropic_cli_mode,
-                    force=True,
+                    force=msg_force,
                     timeout=agent_timeout,
                     model=agent_model,
+                )
+                _log_skill_usage_for_request(
+                    req_id,
+                    prompt,
+                    agent_stdout=result.stdout or "",
+                    agent_stderr=result.stderr or "",
+                    parsed=result.parsed,
                 )
                 if result.returncode == 0:
                     inner_error = _extract_agent_error_message(result)
@@ -2186,8 +2516,15 @@ def create_app(
 
             try:
                 text = await asyncio.to_thread(_run)
+            except subprocess.TimeoutExpired as e:
+                err_msg = truncate_exc_text(e, max_chars=1200)
+                _init_bridge_logging().warning("messages TIMEOUT id=%s %s", req_id, err_msg)
+                return respond(_anthropic_error(err_msg, type_="timeout_error"), http_status=504)
             except RuntimeError as e:
-                return respond(_anthropic_error(str(e), type_="api_error"), http_status=502)
+                return respond(
+                    _anthropic_error(truncate_log_text(str(e), max_chars=1200), type_="api_error"),
+                    http_status=502,
+                )
 
             out = {
                 "id": f"msg_{uuid.uuid4().hex[:24]}",

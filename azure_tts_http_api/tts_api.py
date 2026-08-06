@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -328,21 +329,37 @@ class Handler(BaseHTTPRequestHandler):
         self.write_json({"error": "not found"}, status=404)
 
     def handle_tts(self) -> None:
+        start = time.perf_counter()
+        status_code: int | None = None
+        error: str | None = None
+        request_obj: dict[str, Any] | None = None
+        response_obj: Any = None
+        response_text: str | None = None
         try:
             payload = self.read_json()
+            request_obj = payload
             if payload.get("dry_run"):
-                self.write_json(dry_run(payload))
+                dry = dry_run(payload)
+                self.write_json(dry)
+                response_obj = dry
+                status_code = 200
                 return
             audio, content_type, meta = synthesize(payload)
             if payload.get("return_json"):
-                self.write_json(
-                    {
-                        "provider": resolve_provider(payload),
-                        "contentType": content_type,
-                        "audioBase64": __import__("base64").b64encode(audio).decode("ascii"),
-                        "meta": meta,
-                    }
-                )
+                out = {
+                    "provider": resolve_provider(payload),
+                    "contentType": content_type,
+                    "audioBase64": __import__("base64").b64encode(audio).decode("ascii"),
+                    "meta": meta,
+                }
+                self.write_json(out)
+                response_obj = {
+                    "provider": out["provider"],
+                    "contentType": content_type,
+                    "audioBase64": f"<omitted {len(audio)} bytes>",
+                    "meta": meta,
+                }
+                status_code = 200
                 return
             self.send_response(200)
             self.send_header("Content-Type", content_type)
@@ -351,8 +368,38 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(audio)))
             self.end_headers()
             self.wfile.write(audio)
+            response_obj = {
+                "content_type": content_type,
+                "audio_bytes": len(audio),
+                "meta": meta,
+            }
+            response_text = f"audio {len(audio)} bytes ({content_type})"
+            status_code = 200
         except (TtsError, json.JSONDecodeError) as exc:
+            error = str(exc)
+            status_code = 400
             self.write_json({"error": str(exc)}, status=400)
+            response_obj = {"error": str(exc)}
+        finally:
+            try:
+                from console_ingest import build_io_meta, report_request
+
+                meta = build_io_meta(request_obj=request_obj, extra={"source": "proxy_live"})
+                if response_obj is not None:
+                    meta["response"] = response_obj
+                if response_text:
+                    meta["response_text"] = response_text
+                report_request(
+                    proxy_id="azure-tts-http-api",
+                    path="/tts",
+                    status_code=status_code,
+                    latency_ms=round((time.perf_counter() - start) * 1000, 2),
+                    mode="tts",
+                    error=error,
+                    meta=meta,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def handle_capture(self) -> None:
         try:

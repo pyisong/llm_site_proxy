@@ -163,18 +163,31 @@ def _agent_subprocess_logger() -> logging.Logger:
     return logging.getLogger("cursor_openai_bridge")
 
 
-def _argv_for_log(cmd: list[str], *, tail_chars: int = 240) -> list[str]:
-    """日志用 argv：最后一项（prompt）过长时首尾截断。"""
+def _argv_for_log(cmd: list[str], *, max_chars: int | None = None) -> list[str]:
+    """日志 / 异常用 argv：最后一项（prompt）过长时首尾截断。"""
     if not cmd:
         return []
     out = list(cmd[:-1])
-    last = cmd[-1]
-    if len(last) <= tail_chars * 2 + 32:
-        out.append(last)
-        return out
-    mid = f"...<+{len(last) - 2 * tail_chars}chars>..."
-    out.append(f"{last[:tail_chars]}{mid}{last[-tail_chars:]}")
+    # prompt 单独限长，默认比全局日志更短，避免 TimeoutExpired 刷屏
+    prompt_cap = 960 if max_chars is None else max_chars
+    out.append(truncate_log_text(cmd[-1], max_chars=prompt_cap))
     return out
+
+
+def _timeout_expired_for_raise(
+    cmd: list[str],
+    timeout: float,
+    *,
+    output: str | None = None,
+    stderr: str | None = None,
+) -> subprocess.TimeoutExpired:
+    """构造截断后的 TimeoutExpired，避免 ASGI traceback 带上整段 prompt。"""
+    return subprocess.TimeoutExpired(
+        _argv_for_log(cmd),
+        timeout,
+        output=truncate_log_text(output) if output else output,
+        stderr=truncate_log_text(stderr) if stderr else stderr,
+    )
 
 
 def _run_cursor_agent_subprocess_monitored(
@@ -311,10 +324,12 @@ def _run_cursor_agent_subprocess_monitored(
             prefix,
             len(stdout),
             len(stderr),
-            truncate_log_text(stderr[-12000:] if stderr else ""),
-            truncate_log_text(stdout[-12000:] if stdout else ""),
+            truncate_log_text(stderr[-4000:] if stderr else ""),
+            truncate_log_text(stdout[-4000:] if stdout else ""),
         )
-        raise subprocess.TimeoutExpired(cmd, float(timeout or 0), output=stdout, stderr=stderr)
+        raise _timeout_expired_for_raise(
+            cmd, float(timeout or 0), output=stdout, stderr=stderr
+        )
 
     log.info(
         "%s END returncode=%s elapsed=%.1fs stdout_chars=%d stderr_chars=%d",
@@ -570,14 +585,25 @@ def run_cursor_agent(
                 log_stderr_lines=log_stderr_lines,
             )
         else:
-            cp = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=run_env,
-                cwd=cwd,
-            )
+            try:
+                cp = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=run_env,
+                    cwd=cwd,
+                )
+            except subprocess.TimeoutExpired as exc:
+                out = exc.output if isinstance(exc.output, str) else None
+                err = exc.stderr if isinstance(exc.stderr, str) else None
+                if isinstance(exc.output, (bytes, bytearray)):
+                    out = exc.output.decode("utf-8", errors="replace")
+                if isinstance(exc.stderr, (bytes, bytearray)):
+                    err = exc.stderr.decode("utf-8", errors="replace")
+                raise _timeout_expired_for_raise(
+                    cmd, float(exc.timeout or timeout or 0), output=out, stderr=err
+                ) from None
     finally:
         _cleanup_prompt_file(prompt_file)
 

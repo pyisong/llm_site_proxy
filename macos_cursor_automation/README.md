@@ -10,6 +10,26 @@
   `/Applications/Cursor.app/Contents/Resources/app/bin/cursor`。
 - **`agent` / `serve`**：需完成 Cursor 账号登录（`cursor agent login`）或设置 **`CURSOR_API_KEY`**。
 
+## 全局 Skills（可选）
+
+宿主机目录：`llm_site_proxy/cursor_skills/`（compose 挂载为容器内 `/root/.cursor/skills`）。重启后仍在。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/v1/skills` | 列出已安装 |
+| GET | `/v1/skills/{name}` | 详情；`?include_body=1` 含正文 |
+| POST | `/v1/skills/jobs` | 异步安装，立即 `202` + `{id,status}`；`GET /v1/skills/jobs/{id}` 轮询 |
+| POST | `/v1/skills/upload` | multipart：`file`（zip）+ 可选 `name`/`overwrite`/`subdir`；本地上传，不依赖访问 GitHub |
+| POST | `/v1/skills/install` | `{source: path\|git\|url, ref, name?, overwrite?, subdir?, branch?}`；远程需 `CURSOR_SKILLS_ALLOW_REMOTE=1`。git 默认超时 `CURSOR_SKILLS_REMOTE_TIMEOUT`（1200s）。慢网络请用 `/v1/skills/jobs` 或 zip 上传。 |
+| POST | `/v1/skills/generate` | `{prompt, name, overwrite?}` 由 agent 生成并落盘 |
+| DELETE | `/v1/skills/{name}` | 卸载 |
+
+**使用：** 仍走 `/v1/chat/completions`，在消息里写 `/skill-name …`（或靠 description 自动选用）。需要写文件/跑脚本时用 `metadata.cursor_agent_mode: "writable"`。
+
+**日志：** 每次 chat/messages 结束后有一行 `skill_usage=none|requested|evidenced|requested+evidenced`（可用 `CURSOR_BRIDGE_LOG_SKILL_USAGE=0` 关闭）。
+
+本机非 Docker：可将该目录软链到 `~/.cursor/skills`，或设 `CURSOR_SKILLS_DIR` 指向它。
+
 ## 安装
 
 ```bash
@@ -155,7 +175,7 @@ app = create_app(default_workspace=Path("."), agent_mode="ask", agent_timeout=60
 | POST | `/v1/images/generations` | 兼容 OpenAI Images：默认 **agent** 产出 **SVG**（可选栅格 PNG）；**agent_interactive** 走终端同款 Agent 生图工具，将 **PNG** 写入 ``workspace/.cursor_bridge_generated/`` 并返回 ``data:image/...``；**sd_webui** 为 A1111 扩散 PNG |
 | POST | `/v1/images/edits` | 兼容 OpenAI **images.edit**（``multipart/form-data``）：上传参考图 + prompt；**agent_interactive** 读参考图生 PNG；**sd_webui** 走 ``/sdapi/v1/img2img``；**agent** 读参考图产出 SVG |
 
-**`/v1/chat/completions` 日志**：logger 名为 `cursor_openai_bridge`。默认将每条请求的 **完整 JSON 请求体**、**完整 JSON 响应体**（及 `Authorization` 脱敏后的请求头）打到 **stderr**；若配置了日志目录（见下），**同时写入** `cursor_openai_bridge.log`。大 body 可用 **`CURSOR_BRIDGE_LOG_MAX_CHARS`** 截断；**502** 时额外有一条 **WARNING** 含 agent 的 `stdout`/`stderr` 片段。**流式请求**（`stream: true`）不会在「结束」时再打整段响应体，仅有一条 **STREAM** 级别的 info 标记。
+**`/v1/chat/completions` 日志**：logger 名为 `cursor_openai_bridge`。默认将每条请求的 **完整 JSON 请求体**、**完整 JSON 响应体**（及 `Authorization` 脱敏后的请求头）打到 **stderr**；若配置了日志目录（见下），**同时写入** `cursor_openai_bridge.log`。大 body 可用 **`CURSOR_BRIDGE_LOG_MAX_CHARS`** 截断（默认保留首尾、省略中间）；**502** 时额外有一条 **WARNING** 含 agent 的 `stdout`/`stderr` 片段。**流式请求**（`stream: true`）不会在「结束」时再打整段响应体，仅有一条 **STREAM** 级别的 info 标记。
 
 ### 运行日志（`serve`）
 
@@ -186,9 +206,9 @@ Authorization: Bearer <与环境变量相同的密钥>
 
 - 默认：启动 `serve` 时的 **`--workspace`**，未传则为**当前工作目录**。
 - 单次请求可在 JSON 根增加 **`metadata.workspace`** 或 **`metadata.workspace_path`**（字符串）覆盖。
-- **按请求隔离（默认开启）**：环境变量 **`CURSOR_BRIDGE_ISOLATE_WORKSPACE=1`**（默认）时，每次 HTTP 请求使用 **`<workspace>/jobs/<req_id>`** 作为 agent 工作区（`req_id` 为网关日志中的 UUID），避免多篇生成/并发请求共享同一目录导致文件与上下文污染。关闭：`CURSOR_BRIDGE_ISOLATE_WORKSPACE=0`，或请求体 **`metadata.isolate_workspace: false`**。
-- 网关每次调用底层 `cursor agent` 时附带 **`--force`**：不延续上一轮 Agent **会话**；与 **`jobs/<req_id>`** 目录隔离互补（会话 vs 磁盘产物）。
-- 网关日志里每条请求仍有独立 **`req_id`**（UUID）；开启隔离时 DEBUG 日志会打印实际 `workspace` 路径。
+- **按请求/任务隔离（默认开启）**：环境变量 **`CURSOR_BRIDGE_ISOLATE_WORKSPACE=1`**（默认）时，agent 工作区为 **`<workspace>/jobs/<key>`**。`key` 优先 **`metadata.session_id`**（或 `cursor_session_id` / `task_id`），否则为本请求 **`req_id`**。同一文章生成任务应传固定 `session_id`；新任务换新 id 即新会话。关闭：`CURSOR_BRIDGE_ISOLATE_WORKSPACE=0`，或 **`metadata.isolate_workspace: false`**。
+- **`metadata.force`**：省略或 `true` 时向 CLI 传 **`--force`**（新开 Agent）；同 session 后续调用传 **`false`** 以续聊。无 session 时默认仍 `--force`。
+- 网关日志里每条请求仍有独立 **`req_id`**（UUID）；开启隔离时 DEBUG 日志会打印 `session` / `force` / 实际 `workspace` 路径。
 
 ### 多模态 `content` 片段（与 OpenAI 风格对齐）
 
@@ -391,7 +411,7 @@ python3 client.py image-edit \
 | `CURSOR_BRIDGE_LOG_DIR` | 业务日志目录；默认 `logs`（写入 `cursor_openai_bridge.log`）；设为空字符串则仅控制台 |
 | `CURSOR_BRIDGE_LOG_FILE_MAX_BYTES` | 业务日志单文件最大字节（默认 `10485760`） |
 | `CURSOR_BRIDGE_LOG_FILE_BACKUP_COUNT` | 轮转保留文件个数（默认 `5`） |
-| `CURSOR_BRIDGE_LOG_MAX_CHARS` | 单条请求/响应日志最大字符，`0` 不截断 |
+| `CURSOR_BRIDGE_LOG_MAX_CHARS` | 单条请求/响应/异常日志最大字符（默认 `2048`，超长保留首尾省略中间）；`0` 不截断 |
 | `CURSOR_BRIDGE_LOG_AGENT_PROMPT` | 设为 `1` 时额外打印发给 agent 的 prompt |
 | `CURSOR_BRIDGE_LOG_AGENT_SUBPROCESS` | 设为 `1` 时对所有 agent 子进程打心跳与超时尾部输出 |
 | `CURSOR_BRIDGE_AGENT_PROGRESS_INTERVAL_SEC` | 子进程心跳间隔（秒，默认 `30`） |

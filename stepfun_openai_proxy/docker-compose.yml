@@ -23,7 +23,7 @@ services:
       STEPFUN_BROWSER_START_TIMEOUT: "600"
       STEPFUN_NEW_CHAT_PER_REQUEST: "1"
       STEPFUN_LOG_LEVEL: INFO
-      STEPFUN_LOG_MAX_CHARS: "500"
+      STEPFUN_LOG_MAX_CHARS: "400"
     volumes:
       - ./secrets:/run/secrets:ro
 

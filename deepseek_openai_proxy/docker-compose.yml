@@ -23,7 +23,7 @@ services:
       DEEPSEEK_BROWSER_START_TIMEOUT: "600"
       DEEPSEEK_NEW_CHAT_PER_REQUEST: "1"
       DEEPSEEK_LOG_LEVEL: INFO
-      DEEPSEEK_LOG_MAX_CHARS: "500"
+      DEEPSEEK_LOG_MAX_CHARS: "400"
     volumes:
       - ./secrets:/run/secrets:ro
 

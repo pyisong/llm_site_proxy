@@ -407,16 +407,19 @@ async def test_chat_completion_logs_request_and_response(caplog):
 
 
 def test_truncate_shortens_long_strings(monkeypatch):
-    monkeypatch.setattr(app_module, "_LOG_MAX_CHARS", 10)
-    long_text = "a" * 100
+    monkeypatch.setattr(app_module, "_LOG_MAX_CHARS", 80)
+    long_text = "HEAD" + ("a" * 100) + "TAIL"
     result = app_module._truncate(long_text)
-    assert result.startswith("a" * 10)
-    assert "truncated 90 chars" in result
+    assert result.startswith("HEAD")
+    assert result.endswith("TAIL")
+    assert "省略中间" in result
+    assert len(result) <= 80
 
 
 def test_json_for_log_truncates_large_payload(monkeypatch):
-    monkeypatch.setattr(app_module, "_LOG_MAX_CHARS", 50)
+    monkeypatch.setattr(app_module, "_LOG_MAX_CHARS", 80)
     payload = {"messages": [{"role": "user", "content": "x" * 200}]}
     full = app_module._json_for_log(payload)
-    assert "truncated" in full
+    assert "省略中间" in full
     assert len(full) < len(json.dumps(payload))
+    assert len(full) <= 80

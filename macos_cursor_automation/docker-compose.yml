@@ -12,11 +12,16 @@ services:
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}
       CURSOR_OPENAI_BRIDGE_API_KEY: ${CURSOR_OPENAI_BRIDGE_API_KEY:-}
       CURSOR_BRIDGE_LOG_LEVEL: ${CURSOR_BRIDGE_LOG_LEVEL:-INFO}
-      CURSOR_BRIDGE_LOG_MAX_CHARS: ${CURSOR_BRIDGE_LOG_MAX_CHARS:-512}
+      CURSOR_BRIDGE_LOG_MAX_CHARS: ${CURSOR_BRIDGE_LOG_MAX_CHARS:-2048}
       CURSOR_BRIDGE_MODELS_CACHE_TTL: ${CURSOR_BRIDGE_MODELS_CACHE_TTL:-60}
       CURSOR_BRIDGE_LOG_AGENT_PROMPT: ${CURSOR_BRIDGE_LOG_AGENT_PROMPT:-0}
       CURSOR_BRIDGE_ISOLATE_WORKSPACE: ${CURSOR_BRIDGE_ISOLATE_WORKSPACE:-1}
-    # volumes:
+      CURSOR_SKILLS_DIR: /root/.cursor/skills
+      CURSOR_SKILLS_ALLOW_REMOTE: ${CURSOR_SKILLS_ALLOW_REMOTE:-1}
+      CURSOR_BRIDGE_LOG_SKILL_USAGE: ${CURSOR_BRIDGE_LOG_SKILL_USAGE:-1}
+    volumes:
+      # 全局 Cursor Skills（持久）：宿主机 llm_site_proxy/cursor_skills → 容器用户级 skills
+      - ../cursor_skills:/root/.cursor/skills:rw
       # 挂载到容器内 agent 工作区（与 -w /workspace 一致）
       # - ${CURSOR_BRIDGE_WORKSPACE:-./workspace}:/workspace:rw
       # 认证：优先在 .env 设置 CURSOR_API_KEY（与无头/CI 一致，与 IDE 登录会话无关）。

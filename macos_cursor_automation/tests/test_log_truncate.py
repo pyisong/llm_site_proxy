@@ -26,20 +26,25 @@ class TruncateLogTextTests(unittest.TestCase):
         s = "x" * 20000
         self.assertEqual(truncate_log_text(s), s)
 
-    def test_truncates_with_marker(self) -> None:
-        os.environ["CURSOR_BRIDGE_LOG_MAX_CHARS"] = "100"
-        s = "a" * 500
+    def test_truncates_keeps_head_and_tail(self) -> None:
+        os.environ["CURSOR_BRIDGE_LOG_MAX_CHARS"] = "120"
+        s = "HEAD" + ("m" * 500) + "TAIL"
         out = truncate_log_text(s)
-        self.assertIn("[日志已截断 total_chars=500]", out)
-        self.assertLessEqual(len(out), 100)
+        self.assertTrue(out.startswith("HEAD"))
+        self.assertTrue(out.endswith("TAIL"))
+        self.assertIn("[省略中间", out)
+        self.assertIn("total=508", out)
+        self.assertLessEqual(len(out), 120)
 
     def test_formatter_truncates_long_line(self) -> None:
-        os.environ["CURSOR_BRIDGE_LOG_MAX_CHARS"] = "50"
+        os.environ["CURSOR_BRIDGE_LOG_MAX_CHARS"] = "80"
         fmt = TruncatingLogFormatter("%(message)s")
-        record = logging.LogRecord("t", 20, "", 0, "x" * 200, (), None)
+        record = logging.LogRecord("t", 20, "", 0, "A" + ("x" * 200) + "Z", (), None)
         out = fmt.format(record)
-        self.assertIn("[日志已截断 total_chars=", out)
-        self.assertLessEqual(len(out), 50)
+        self.assertIn("[省略中间", out)
+        self.assertTrue(out.startswith("A"))
+        self.assertTrue(out.endswith("Z"))
+        self.assertLessEqual(len(out), 80)
 
     def test_formatter_accepts_uvicorn_use_colors(self) -> None:
         fmt = TruncatingLogFormatter("%(message)s", use_colors=True)
