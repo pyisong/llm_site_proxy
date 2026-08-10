@@ -36,6 +36,9 @@ from console_ingest import (  # noqa: E402
         ("POST", "/v1/images/generations", True),
         ("POST", "/v1/videos/generations", True),
         ("POST", "/tts", True),
+        ("POST", "/v1/metaso/search", True),
+        ("POST", "/v1/metaso/reader", True),
+        ("POST", "/v1/metaso/chat", True),
         ("GET", "/v1/chat/completions", False),
         ("POST", "/health", False),
         ("POST", "/v1/models", False),
@@ -55,6 +58,9 @@ def test_should_ingest(method: str, path: str, expected: bool) -> None:
         ("/v1/videos/generations", "video"),
         ("/tts", "tts"),
         ("/v1/tts", "tts"),
+        ("/v1/metaso/search", "search"),
+        ("/v1/metaso/reader", "reader"),
+        ("/v1/metaso/chat", "chat"),
     ],
 )
 def test_infer_mode(path: str, mode: str) -> None:

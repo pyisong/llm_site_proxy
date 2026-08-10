@@ -13,6 +13,8 @@ class ProxyEndpoint:
     videos: str | None = None
     models: str | None = None
     tts: str | None = None
+    search: str | None = None
+    reader: str | None = None
 
     def as_dict(self) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -28,6 +30,10 @@ class ProxyEndpoint:
             out["models"] = self.models
         if self.tts:
             out["tts"] = self.tts
+        if self.search:
+            out["search"] = self.search
+        if self.reader:
+            out["reader"] = self.reader
         return out
 
 
@@ -124,6 +130,21 @@ SERVICES: tuple[ProxyService, ...] = (
         auth_env="QWEN_PROXY_API_KEY",
     ),
     ProxyService(
+        id="metaso-openai-proxy",
+        name="Metaso OpenAI Proxy",
+        probe_host="metaso-openai-proxy",
+        probe_port=8000,
+        public_port=18006,
+        capabilities=("llm", "search"),
+        endpoints=ProxyEndpoint(
+            chat="/v1/chat/completions",
+            models="/v1/models",
+            search="/v1/metaso/search",
+            reader="/v1/metaso/reader",
+        ),
+        auth_env="METASO_PROXY_API_KEY",
+    ),
+    ProxyService(
         id="cursor-openai-bridge",
         name="Cursor OpenAI Bridge",
         probe_host="cursor-openai-bridge",
@@ -152,4 +173,4 @@ SERVICES: tuple[ProxyService, ...] = (
 )
 
 
-KNOWN_CAPABILITIES = ("llm", "image", "video", "tts")
+KNOWN_CAPABILITIES = ("llm", "image", "video", "tts", "search")

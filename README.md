@@ -1,6 +1,6 @@
 # llm_site_proxy
 
-统一管理各站点 OpenAI 兼容代理与周边网关（DeepSeek / Kimi / StepFun / Qwen / Cursor Bridge / Azure TTS），并通过 **proxy-catalog** 对外提供服务发现接口。
+统一管理各站点 OpenAI 兼容代理与周边网关（DeepSeek / Kimi / StepFun / Qwen / Metaso / Cursor Bridge / Azure TTS），并通过 **proxy-catalog** 对外提供服务发现接口。
 
 ## 一键启动全部代理
 
@@ -48,6 +48,7 @@ curl -s 'http://10.1.10.113:18010/v1/services?capability=image' | python3 -m jso
 | kimi-openai-proxy | 18003 |
 | stepfun-openai-proxy | 18004 |
 | qwen-openai-proxy | 18005 |
+| metaso-openai-proxy | 18006 |
 | cursor-openai-bridge | 8765 |
 | azure-tts-http-api | 8787 |
 

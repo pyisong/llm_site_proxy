@@ -1,0 +1,24 @@
+services:
+  metaso-openai-proxy:
+    build:
+      context: .
+      args:
+        USE_CN_MIRROR: ${METASO_USE_CN_MIRROR:-1}
+        BASE_IMAGE: ${METASO_BASE_IMAGE:-mcr.azure.cn/playwright/python:v1.60.0-noble}
+        PIP_INDEX_URL: ${METASO_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        APT_MIRROR: ${METASO_APT_MIRROR:-mirrors.aliyun.com}
+    container_name: metaso-openai-proxy
+    ports:
+      - "${METASO_PROXY_PORT:-18006}:8000"
+    environment:
+      METASO_PROXY_API_KEY: ${METASO_PROXY_API_KEY:-local-secret}
+      METASO_STORAGE_STATE_FILE: /run/secrets/metaso_storage.json
+      METASO_TIMEOUT: ${METASO_TIMEOUT:-300}
+      METASO_NEW_CHAT_PER_REQUEST: "1"
+      METASO_LOG_LEVEL: ${METASO_LOG_LEVEL:-INFO}
+      METASO_LOG_MAX_CHARS: ${METASO_LOG_MAX_CHARS:-400}
+      CONSOLE_INGEST_URL: ${CONSOLE_INGEST_URL:-http://proxy-console:18020/api/ingest/request}
+      CONSOLE_PROXY_ID: metaso-openai-proxy
+    volumes:
+      - ./secrets:/run/secrets:ro
+    restart: unless-stopped

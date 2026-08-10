@@ -99,7 +99,7 @@ def infer_mode(path: str) -> str:
     if p == "/v1/metaso/reader":
         return "reader"
     if p.startswith("/v1/metaso/"):
-        return "chat"
+        return "metaso"
     return "chat"
 
 

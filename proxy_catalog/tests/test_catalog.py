@@ -50,8 +50,14 @@ def test_services_live_probe_and_by_capability(monkeypatch):
     assert "image" in payload["by_capability"]
     assert "video" in payload["by_capability"]
     assert "tts" in payload["by_capability"]
+    assert "search" in payload["by_capability"]
     assert any(x["id"] == "qwen-openai-proxy" for x in payload["by_capability"]["image"])
     assert any(x["id"] == "azure-tts-http-api" for x in payload["by_capability"]["tts"])
+    metaso = next(s for s in payload["services"] if s["id"] == "metaso-openai-proxy")
+    assert metaso["base_url"] == "http://10.1.10.113:18006/v1"
+    assert set(metaso["capabilities"]) == {"llm", "search"}
+    assert metaso["endpoints"]["search"] == "/v1/metaso/search"
+    assert any(x["id"] == "metaso-openai-proxy" for x in payload["by_capability"]["search"])
 
 
 @respx.mock
