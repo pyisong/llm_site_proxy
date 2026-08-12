@@ -140,7 +140,13 @@ services:
       METASO_PROXY_API_KEY: ${METASO_PROXY_API_KEY:-local-secret}
       METASO_STORAGE_STATE_FILE: /run/secrets/metaso_storage.json
       METASO_TIMEOUT: ${METASO_TIMEOUT:-300}
-      METASO_NEW_CHAT_PER_REQUEST: "1"
+      METASO_NEW_CHAT_PER_REQUEST: "0"
+      METASO_RATE_LIMIT_RETRIES: ${METASO_RATE_LIMIT_RETRIES:-0}
+      METASO_MIN_REQUEST_INTERVAL_SEC: ${METASO_MIN_REQUEST_INTERVAL_SEC:-15}
+      METASO_RATE_LIMIT_COOLDOWN_SEC: ${METASO_RATE_LIMIT_COOLDOWN_SEC:-300}
+      # 机房 IP 易被秘塔封；需住宅节点时设 METASO_HTTP_PROXY（直连 mihomo 无效）
+      METASO_HTTP_PROXY: ${METASO_HTTP_PROXY:-}
+      METASO_CHAT_MODEL: ${METASO_CHAT_MODEL:-fast_thinking}
       METASO_LOG_LEVEL: ${METASO_LOG_LEVEL:-INFO}
       METASO_LOG_MAX_CHARS: ${METASO_LOG_MAX_CHARS:-400}
       CONSOLE_INGEST_URL: ${CONSOLE_INGEST_URL:-http://proxy-console:18020/api/ingest/request}
@@ -256,6 +262,7 @@ services:
     build:
       context: ./proxy_console
       args:
+        BASE_IMAGE: ${CONSOLE_BASE_IMAGE:-mcr.azure.cn/playwright/python:v1.60.0-noble}
         NPM_REGISTRY: ${CONSOLE_NPM_REGISTRY:-https://registry.npmmirror.com}
         PIP_INDEX_URL: ${CONSOLE_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     container_name: proxy-console
@@ -272,12 +279,23 @@ services:
       CONSOLE_KEEPALIVE_CHECK_INTERVAL: ${CONSOLE_KEEPALIVE_CHECK_INTERVAL:-3600}
       CONSOLE_SEED_DEMO: ${CONSOLE_SEED_DEMO:-1}
       CONSOLE_CURSOR_BRIDGE_URL: ${CONSOLE_CURSOR_BRIDGE_URL:-http://cursor-openai-bridge:8765}
+      CONSOLE_SECRETS_ROOT: /secrets
+      # 可选：登录浏览器走代理（换出口），例如 http://10.1.1.109:7890
+      CONSOLE_LOGIN_HTTP_PROXY: ${CONSOLE_LOGIN_HTTP_PROXY:-}
       CATALOG_PUBLIC_HOST: ${CATALOG_PUBLIC_HOST:-10.1.10.113}
       CURSOR_OPENAI_BRIDGE_API_KEY: ${CURSOR_OPENAI_BRIDGE_API_KEY:-}
       DEEPSEEK_PROXY_API_KEY: ${DEEPSEEK_PROXY_API_KEY:-local-secret}
       KIMI_PROXY_API_KEY: ${KIMI_PROXY_API_KEY:-local-secret}
       STEPFUN_PROXY_API_KEY: ${STEPFUN_PROXY_API_KEY:-local-secret}
       QWEN_PROXY_API_KEY: ${QWEN_PROXY_API_KEY:-local-secret}
+      METASO_PROXY_API_KEY: ${METASO_PROXY_API_KEY:-local-secret}
+    volumes:
+      # RW：网页登录刷新直接写回各 proxy 的 storage
+      - ./deepseek_openai_proxy/secrets:/secrets/deepseek
+      - ./kimi_openai_proxy/secrets:/secrets/kimi
+      - ./stepfun_openai_proxy/secrets:/secrets/stepfun
+      - ./qwen_openai_proxy/secrets:/secrets/qwen
+      - ./metaso_openai_proxy/secrets:/secrets/metaso
     depends_on:
       proxy-console-db:
         condition: service_healthy

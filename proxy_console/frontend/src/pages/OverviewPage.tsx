@@ -190,48 +190,47 @@ export default function OverviewPage() {
           </Reveal>
 
           <Reveal delay={0.05} className="mb-4">
-            <Panel className="overflow-x-auto">
-              <div className="flex min-w-[720px] divide-x divide-line">
-                {data.services.map((s) => (
-                  <div key={s.id} className="flex-1 px-4 py-3 min-w-[140px]">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium truncate">{s.name}</span>
-                      <StatusPill
-                        ok={s.auth_state === "ok"}
-                        label={s.auth_state}
-                      />
-                    </div>
-                    <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-[11px]">
-                      <div>
-                        <div className="text-muted">req</div>
-                        <div className="text-ink text-sm">{s.requests}</div>
-                      </div>
-                      <div>
-                        <div className="text-muted">err</div>
-                        <div
-                          className={`text-sm ${s.errors ? "text-fail" : "text-ink"}`}
-                        >
-                          {s.errors}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-muted">lat</div>
-                        <div className="text-ink text-sm">
-                          {fmtMs(s.avg_latency_ms)}
-                        </div>
-                      </div>
-                    </div>
-                    {s.auth_message ? (
-                      <div
-                        className={`mt-2 text-[11px] truncate ${authTone(s.auth_state)}`}
-                      >
-                        {s.auth_message}
-                      </div>
-                    ) : null}
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+              {data.services.map((s) => (
+                <Panel key={s.id} className="px-4 py-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium truncate">{s.name}</span>
+                    <StatusPill
+                      ok={s.auth_state === "ok"}
+                      label={s.auth_state}
+                    />
                   </div>
-                ))}
-              </div>
-            </Panel>
+                  <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-[11px]">
+                    <div>
+                      <div className="text-muted">req</div>
+                      <div className="text-ink text-sm">{s.requests}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted">err</div>
+                      <div
+                        className={`text-sm ${s.errors ? "text-fail" : "text-ink"}`}
+                      >
+                        {s.errors}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-muted">lat</div>
+                      <div className="text-ink text-sm">
+                        {fmtMs(s.avg_latency_ms)}
+                      </div>
+                    </div>
+                  </div>
+                  {s.auth_message ? (
+                    <div
+                      className={`mt-2 text-[11px] truncate ${authTone(s.auth_state)}`}
+                      title={s.auth_message}
+                    >
+                      {s.auth_message}
+                    </div>
+                  ) : null}
+                </Panel>
+              ))}
+            </div>
           </Reveal>
 
           <div className="grid lg:grid-cols-[1.2fr_1fr] gap-4">

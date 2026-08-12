@@ -18,6 +18,7 @@ PROXIES = (
     ("kimi-openai-proxy", "Kimi", True),
     ("stepfun-openai-proxy", "StepFun", True),
     ("qwen-openai-proxy", "Qwen", True),
+    ("metaso-openai-proxy", "Metaso", True),
     ("cursor-openai-bridge", "Cursor Bridge", False),
     ("azure-tts-http-api", "Azure TTS", True),
 )
@@ -550,29 +551,42 @@ def latest_connectivity() -> list[dict[str, Any]]:
 
 
 def list_auth_status() -> list[dict[str, Any]]:
-    name_map = {p[0]: p[1] for p in PROXIES}
-    ka_map = {p[0]: p[2] for p in PROXIES}
+    """Always emit one row per PROXIES entry (left-join DB), so new proxies appear immediately."""
     with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM auth_status ORDER BY proxy_id"
-        ).fetchall()
-    return [
-        {
-            **dict(r),
-            "name": name_map.get(r["proxy_id"], r["proxy_id"]),
-            "keepalive": ka_map.get(r["proxy_id"], False),
+        rows = {
+            r["proxy_id"]: dict(r)
+            for r in conn.execute("SELECT * FROM auth_status").fetchall()
         }
-        for r in rows
-    ]
+    out: list[dict[str, Any]] = []
+    for pid, name, keepalive in PROXIES:
+        r = rows.get(pid) or {
+            "proxy_id": pid,
+            "state": "unknown",
+            "message": None,
+            "last_ok_at": None,
+            "last_fail_at": None,
+        }
+        out.append(
+            {
+                **r,
+                "name": name,
+                "keepalive": keepalive,
+            }
+        )
+    return out
 
 
 def mark_auth_refreshed(proxy_id: str) -> dict[str, Any]:
+    if proxy_id not in {p[0] for p in PROXIES}:
+        raise KeyError(proxy_id)
+    msg = "operator marked storage refreshed; awaiting next probe"
     with db() as conn:
         conn.execute(
-            """UPDATE auth_status
-               SET state='unknown', message=%s, last_ok_at=NULL
-               WHERE proxy_id=%s""",
-            ("operator marked storage refreshed; awaiting next probe", proxy_id),
+            """INSERT INTO auth_status(proxy_id, state, message, last_ok_at)
+               VALUES (%s, 'unknown', %s, NULL)
+               ON CONFLICT (proxy_id) DO UPDATE SET
+                 state='unknown', message=EXCLUDED.message, last_ok_at=NULL""",
+            (proxy_id, msg),
         )
         row = conn.execute(
             "SELECT * FROM auth_status WHERE proxy_id=%s", (proxy_id,)

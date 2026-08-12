@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -154,6 +154,139 @@ def api_mark_refreshed(proxy_id: str) -> dict[str, Any]:
         return db.mark_auth_refreshed(proxy_id)
     except KeyError:
         raise HTTPException(404, "unknown proxy") from None
+
+
+@app.get("/api/login-sites")
+def api_login_sites() -> dict[str, Any]:
+    from login_sites import list_login_sites
+
+    return {"items": list_login_sites()}
+
+
+class LoginSessionBody(BaseModel):
+    proxy_id: str
+
+
+@app.post("/api/login-sessions")
+async def api_login_session_start(body: LoginSessionBody) -> dict[str, Any]:
+    from login_sites import LOGIN_SITES
+    from login_session import manager
+
+    if body.proxy_id not in LOGIN_SITES:
+        raise HTTPException(404, "proxy 不支持网页登录刷新")
+    try:
+        sess = await manager.start(body.proxy_id)
+    except KeyError:
+        raise HTTPException(404, "unknown proxy") from None
+    except Exception as exc:  # noqa: BLE001
+        log.exception("login session start failed")
+        raise HTTPException(500, str(exc)) from exc
+    return {
+        "session_id": sess.id,
+        "proxy_id": sess.site.proxy_id,
+        "name": sess.site.name,
+        "home_url": sess.site.home_url,
+        "notes": sess.site.notes,
+        "ws_path": f"/api/login-sessions/{sess.id}/ws",
+        "viewport": {"width": 1280, "height": 900},
+    }
+
+
+@app.post("/api/login-sessions/{session_id}/save")
+async def api_login_session_save(session_id: str) -> dict[str, Any]:
+    from login_session import manager
+
+    sess = manager.get(session_id)
+    if sess is None:
+        raise HTTPException(404, "session 不存在或已过期")
+    try:
+        result = await manager.save(sess)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("login session save failed")
+        raise HTTPException(500, str(exc)) from exc
+    try:
+        db.mark_auth_refreshed(sess.site.proxy_id)
+    except KeyError:
+        pass
+    await manager.close(session_id)
+    return result
+
+
+@app.delete("/api/login-sessions/{session_id}")
+async def api_login_session_close(session_id: str) -> dict[str, str]:
+    from login_session import manager
+
+    await manager.close(session_id)
+    return {"status": "closed"}
+
+
+@app.websocket("/api/login-sessions/{session_id}/ws")
+async def api_login_session_ws(websocket: WebSocket, session_id: str) -> None:
+    import asyncio
+    import json as json_mod
+
+    from login_session import manager
+
+    sess = manager.get(session_id)
+    if sess is None:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+    sess.subscribers.append(queue)
+    if sess.last_frame_b64:
+        await websocket.send_json(
+            {
+                "type": "frame",
+                "data": sess.last_frame_b64,
+                "w": 1280,
+                "h": 900,
+            }
+        )
+    try:
+        await websocket.send_json(
+            {
+                "type": "hello",
+                "proxy_id": sess.site.proxy_id,
+                "home_url": sess.site.home_url,
+                "notes": sess.site.notes,
+            }
+        )
+
+        async def reader() -> None:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json_mod.loads(raw)
+                except json_mod.JSONDecodeError:
+                    continue
+                if isinstance(msg, dict):
+                    await manager.handle_input(sess, msg)
+
+        async def writer() -> None:
+            while True:
+                msg = await queue.get()
+                await websocket.send_json(msg)
+
+        reader_task = asyncio.create_task(reader())
+        writer_task = asyncio.create_task(writer())
+        done, pending = await asyncio.wait(
+            {reader_task, writer_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+        for t in done:
+            exc = t.exception()
+            if exc and not isinstance(exc, WebSocketDisconnect):
+                log.warning("login ws task error: %s", exc)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if queue in sess.subscribers:
+            sess.subscribers.remove(queue)
 
 
 @app.get("/api/skills")

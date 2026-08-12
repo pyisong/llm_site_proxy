@@ -16,7 +16,8 @@
 
 ``POST /v1/chat/completions`` 与 ``POST /v1/messages``：请求体根级可选 ``metadata``，其中
 ``cursor_agent_mode``（或 ``agent_mode``）可覆盖 ``serve --mode``；``writable`` 等值表示不向 CLI 传 ``--mode``，
-与 ``agent_interactive`` 默认可写行为一致。
+与 ``agent_interactive`` 默认可写行为一致。若 Agent 把交付物写到 workspace 且聊天只回「已写入文件」，
+网关会尝试从该路径回捞正文填入 ``message.content``（见 ``response_hoist``）。
 
 ``POST /v1/images/generations``：
 
@@ -103,6 +104,7 @@ try:
         run_cursor_agent,
     )
     from .log_utils import TruncatingLogFormatter, truncate_exc_text, truncate_log_text
+    from .response_hoist import maybe_hoist_written_file_content
     from .skill_usage import (
         format_skill_usage_log,
         infer_skill_usage,
@@ -132,6 +134,7 @@ except ImportError:
         run_cursor_agent,
     )
     from log_utils import TruncatingLogFormatter, truncate_exc_text, truncate_log_text
+    from response_hoist import maybe_hoist_written_file_content
     from skill_usage import (
         format_skill_usage_log,
         infer_skill_usage,
@@ -524,6 +527,27 @@ def _extract_text_from_content(content: Any) -> str:
         if part.get("type") == "text" and isinstance(part.get("text"), str):
             texts.append(part["text"])
     return "\n".join(texts).strip()
+
+
+def _hoist_agent_reply_if_needed(
+    text: str,
+    workspace: Path,
+    *,
+    req_id: str,
+    route: str,
+) -> str:
+    """Agent 只回「已写入文件」时，从 workspace 回捞正文塞进 API content。"""
+    out, path = maybe_hoist_written_file_content(text, workspace)
+    if path:
+        _init_bridge_logging().info(
+            "%s hoisted written file id=%s path=%s chars=%s→%s",
+            route,
+            req_id,
+            path,
+            len(text or ""),
+            len(out or ""),
+        )
+    return out
 
 
 def _messages_to_prompt(messages: list[dict[str, Any]], media_lines: list[str]) -> str:
@@ -2318,7 +2342,12 @@ def create_app(
                     _truncate_log_text(_serialize_for_log({"error": inner_error})),
                 )
                 return respond(err_payload, http_status=502)
-            text = agent_completion_text(result).strip()
+            text = _hoist_agent_reply_if_needed(
+                agent_completion_text(result).strip(),
+                workspace,
+                req_id=req_id,
+                route="chat/completions",
+            )
         finally:
             if media_root is not None and media_root.is_dir():
                 try:
@@ -2516,6 +2545,12 @@ def create_app(
 
             try:
                 text = await asyncio.to_thread(_run)
+                text = _hoist_agent_reply_if_needed(
+                    text,
+                    workspace,
+                    req_id=req_id,
+                    route="messages",
+                )
             except subprocess.TimeoutExpired as e:
                 err_msg = truncate_exc_text(e, max_chars=1200)
                 _init_bridge_logging().warning("messages TIMEOUT id=%s %s", req_id, err_msg)

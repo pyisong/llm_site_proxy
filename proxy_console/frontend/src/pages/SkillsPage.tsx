@@ -9,7 +9,7 @@ import {
   Prohibit,
   Trash,
 } from "@phosphor-icons/react";
-import { api, fmtTime, type SkillItem } from "../api";
+import { api, fmtTime, skillBlurb, skillDescriptionFull, type SkillItem } from "../api";
 import {
   EmptyState,
   ErrorBanner,
@@ -331,6 +331,163 @@ export default function SkillsPage() {
         </div>
       ) : null}
 
+      {loading ? <Skeleton className="h-72" /> : null}
+
+      {!loading ? (
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_320px] gap-4 mb-4">
+          <Reveal delay={0.04}>
+            <Panel className="overflow-hidden">
+              <div className="px-4 py-3 border-b border-line flex justify-between items-center gap-3">
+                <h2 className="text-sm font-medium">已安装</h2>
+                <span className="font-mono text-[11px] text-muted">
+                  {skills.length}
+                  {source ? ` · ${source}` : ""}
+                </span>
+              </div>
+              {skills.length === 0 ? (
+                <EmptyState
+                  title="没有 Skills"
+                  body="安装一个 skill，或确认 Cursor Bridge 可达。"
+                />
+              ) : (
+                <ul className="divide-y divide-line max-h-[560px] overflow-y-auto">
+                  {skills.map((s) => (
+                    <li key={s.name}>
+                      <button
+                        type="button"
+                        onClick={() => setSelected(s.name)}
+                        className={[
+                          "w-full text-left px-4 py-3 transition hover:bg-panel-2/70",
+                          selected === s.name ? "bg-panel-2" : "",
+                        ].join(" ")}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium font-mono text-sm truncate">
+                            {s.name}
+                          </span>
+                          <div className="flex shrink-0 items-center gap-2">
+                            {s.valid === false ? (
+                              <StatusPill ok={false} label="invalid" />
+                            ) : null}
+                            {s.disabled ? (
+                              <StatusPill ok={false} label="disabled" />
+                            ) : (
+                              <StatusPill ok label="active" />
+                            )}
+                            <span className="font-mono text-[11px] text-muted tabular-nums">
+                              {s.uses}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="mt-1 text-[13px] text-muted line-clamp-2">
+                          {skillBlurb(s.description)}
+                        </p>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
+          </Reveal>
+
+          <Reveal delay={0.08}>
+            <Panel className="p-4 min-h-[320px]">
+              {!current ? (
+                <EmptyState title="选择一个 Skill" body="查看用量与管理操作。" />
+              ) : (
+                <div>
+                  <h2 className="text-lg font-semibold tracking-tight font-mono break-all">
+                    {current.name}
+                  </h2>
+                  {skillDescriptionFull(current.description) ? (
+                    <details className="mt-3 group">
+                      <summary className="cursor-pointer list-none text-sm text-muted leading-relaxed">
+                        <span className="group-open:hidden">
+                          {skillBlurb(current.description, 140)}
+                          <span className="ml-2 text-accent">展开</span>
+                        </span>
+                        <span className="hidden group-open:inline text-accent">
+                          收起描述
+                        </span>
+                      </summary>
+                      <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-line bg-canvas/60 p-3 text-[12px] leading-relaxed text-muted font-sans">
+                        {skillDescriptionFull(current.description)}
+                      </pre>
+                    </details>
+                  ) : (
+                    <p className="mt-2 text-sm text-muted">无描述</p>
+                  )}
+                  <dl className="mt-4 space-y-2 text-sm">
+                    <div className="flex justify-between gap-3 border-b border-line/60 pb-2">
+                      <dt className="text-muted">path</dt>
+                      <dd className="font-mono text-[11px] text-right break-all">
+                        {current.path || "-"}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-3 border-b border-line/60 pb-2">
+                      <dt className="text-muted">uses</dt>
+                      <dd className="font-mono">{current.uses}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3 border-b border-line/60 pb-2">
+                      <dt className="text-muted">last used</dt>
+                      <dd className="font-mono text-[11px]">
+                        {fmtTime(current.last_used_at)}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <GhostButton
+                      disabled={busy}
+                      onClick={() => void toggleDisable(current)}
+                    >
+                      <Prohibit size={16} />
+                      {current.disabled ? "启用" : "禁用"}
+                    </GhostButton>
+                    <GhostButton
+                      danger
+                      disabled={busy}
+                      onClick={() => void onDelete(current.name)}
+                    >
+                      <Trash size={16} />
+                      删除
+                    </GhostButton>
+                  </div>
+
+                  <h3 className="mt-6 text-sm font-medium">使用记录</h3>
+                  {usage.length === 0 ? (
+                    <p className="mt-2 text-sm text-muted">暂无用量事件。</p>
+                  ) : (
+                    <ul className="mt-2 space-y-2 max-h-56 overflow-y-auto">
+                      {usage.map((u) => (
+                        <li
+                          key={u.id}
+                          className="rounded-md border border-line bg-canvas/60 px-3 py-2"
+                        >
+                          <div className="flex justify-between gap-2 text-[12px]">
+                            <span className="font-mono text-accent">
+                              {u.label}
+                            </span>
+                            <span className="font-mono text-muted">
+                              {fmtTime(u.created_at)}
+                            </span>
+                          </div>
+                          {u.request_id ? (
+                            <div className="mt-1 font-mono text-[11px] text-muted truncate">
+                              {u.request_id}
+                            </div>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </Panel>
+          </Reveal>
+        </div>
+      ) : null}
+
       <Reveal className="mb-4">
         <Panel className="overflow-hidden">
           <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
@@ -487,153 +644,10 @@ export default function SkillsPage() {
                 : installMode === "github"
                   ? "可粘贴完整 npx skills add owner/repo [-a cursor]、owner/repo 短名，或 GitHub URL（含 /tree/<branch>/<subdir>）。临时代理仅作用于本次 git clone。"
                   : "填写 Bridge 容器内可读路径，对应 POST /v1/skills/install（source=path）。"}
-              {source ? (
-                <span className="ml-2 font-mono text-muted/80">
-                  source: {source}
-                </span>
-              ) : null}
             </p>
           </form>
         </Panel>
       </Reveal>
-
-      {loading ? <Skeleton className="h-72" /> : null}
-
-      {!loading ? (
-        <div className="grid lg:grid-cols-[1fr_360px] gap-4">
-          <Reveal delay={0.04}>
-            <Panel className="overflow-hidden">
-              <div className="px-4 py-3 border-b border-line flex justify-between">
-                <h2 className="text-sm font-medium">已安装</h2>
-                <span className="font-mono text-[11px] text-muted">
-                  {skills.length}
-                </span>
-              </div>
-              {skills.length === 0 ? (
-                <EmptyState
-                  title="没有 Skills"
-                  body="安装一个 skill，或确认 Cursor Bridge 可达。"
-                />
-              ) : (
-                <ul className="divide-y divide-line max-h-[560px] overflow-y-auto">
-                  {skills.map((s) => (
-                    <li key={s.name}>
-                      <button
-                        type="button"
-                        onClick={() => setSelected(s.name)}
-                        className={[
-                          "w-full text-left px-4 py-3 transition hover:bg-panel-2/70",
-                          selected === s.name ? "bg-panel-2" : "",
-                        ].join(" ")}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="font-medium font-mono text-sm">
-                            {s.name}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            {s.disabled ? (
-                              <StatusPill ok={false} label="disabled" />
-                            ) : (
-                              <StatusPill ok label="active" />
-                            )}
-                            <span className="font-mono text-[11px] text-muted">
-                              {s.uses} uses
-                            </span>
-                          </div>
-                        </div>
-                        <p className="mt-1 text-[13px] text-muted line-clamp-2">
-                          {s.description || "无描述"}
-                        </p>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Panel>
-          </Reveal>
-
-          <Reveal delay={0.08}>
-            <Panel className="p-4 min-h-[320px]">
-              {!current ? (
-                <EmptyState title="选择一个 Skill" body="查看用量与管理操作。" />
-              ) : (
-                <div>
-                  <h2 className="text-lg font-semibold tracking-tight font-mono">
-                    {current.name}
-                  </h2>
-                  <p className="mt-2 text-sm text-muted leading-relaxed">
-                    {current.description || "无描述"}
-                  </p>
-                  <dl className="mt-4 space-y-2 text-sm">
-                    <div className="flex justify-between gap-3 border-b border-line/60 pb-2">
-                      <dt className="text-muted">path</dt>
-                      <dd className="font-mono text-[11px] text-right break-all">
-                        {current.path || "-"}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between gap-3 border-b border-line/60 pb-2">
-                      <dt className="text-muted">uses</dt>
-                      <dd className="font-mono">{current.uses}</dd>
-                    </div>
-                    <div className="flex justify-between gap-3 border-b border-line/60 pb-2">
-                      <dt className="text-muted">last used</dt>
-                      <dd className="font-mono text-[11px]">
-                        {fmtTime(current.last_used_at)}
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <GhostButton
-                      disabled={busy}
-                      onClick={() => void toggleDisable(current)}
-                    >
-                      <Prohibit size={16} />
-                      {current.disabled ? "启用" : "禁用"}
-                    </GhostButton>
-                    <GhostButton
-                      danger
-                      disabled={busy}
-                      onClick={() => void onDelete(current.name)}
-                    >
-                      <Trash size={16} />
-                      删除
-                    </GhostButton>
-                  </div>
-
-                  <h3 className="mt-6 text-sm font-medium">使用记录</h3>
-                  {usage.length === 0 ? (
-                    <p className="mt-2 text-sm text-muted">暂无用量事件。</p>
-                  ) : (
-                    <ul className="mt-2 space-y-2 max-h-56 overflow-y-auto">
-                      {usage.map((u) => (
-                        <li
-                          key={u.id}
-                          className="rounded-md border border-line bg-canvas/60 px-3 py-2"
-                        >
-                          <div className="flex justify-between gap-2 text-[12px]">
-                            <span className="font-mono text-accent">
-                              {u.label}
-                            </span>
-                            <span className="font-mono text-muted">
-                              {fmtTime(u.created_at)}
-                            </span>
-                          </div>
-                          {u.request_id ? (
-                            <div className="mt-1 font-mono text-[11px] text-muted truncate">
-                              {u.request_id}
-                            </div>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-            </Panel>
-          </Reveal>
-        </div>
-      ) : null}
     </div>
   );
 }

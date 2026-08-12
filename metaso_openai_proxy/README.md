@@ -43,7 +43,9 @@ curl http://127.0.0.1:18006/v1/chat/completions \
   -H "Authorization: Bearer local-secret" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "metaso-detail",
+    "model": "metaso-chat-web",
+    "metaso_mode": "detail",
+    "metaso_scope": "webpage",
     "messages": [{"role": "user", "content": "用一句话介绍秘塔AI"}],
     "stream": false
   }'
@@ -69,17 +71,14 @@ curl http://127.0.0.1:18006/v1/metaso/reader \
 
 ## 模型
 
-| model | 强度 | 范围 |
-| --- | --- | --- |
-| `metaso-concise` | 简洁 | 全网 |
-| `metaso-detail` | 深入 | 全网（默认） |
-| `metaso-research` | 研究 | 全网 |
-| `metaso-concise-scholar` / `detail-scholar` / `research-scholar` | 对应强度 | 学术 |
-| `metaso-document` | 深入 | 文库 |
-| `metaso-podcast` | 深入 | 播客 |
-| `metaso-chat-web` | 深入 | 全网（别名） |
+`/v1/models` **只列出** `metaso-chat-web`（与 DeepSeek 一样单入口）；模式与范围用请求体 / 头覆盖。
 
-也可用请求体 `metaso_scope` / `metaso_mode` 或头 `X-Metaso-Scope` / `X-Metaso-Mode` 覆盖。
+| 参数 | 取值 |
+| --- | --- |
+| `metaso_mode` | `chat` / `fast` / `concise` / `detail` / `research` / `nosearch` |
+| `metaso_scope` | `webpage` / `scholar` / `document` / `podcast` |
+
+兼容：仍可直接传旧 model id（`metaso-detail`、`metaso-concise-scholar` 等）解析为 mode×scope；也可用头 `X-Metaso-Scope` / `X-Metaso-Mode`。
 
 ## Docker
 
@@ -97,6 +96,9 @@ docker compose up -d --build
 | `METASO_STORAGE_STATE_FILE` | 自动发现 `secrets/metaso_storage.json` | Playwright storage |
 | `METASO_TIMEOUT` | `300` | 上游超时秒 |
 | `METASO_NEW_CHAT_PER_REQUEST` | `1` | 默认每请求新建会话 |
+| `METASO_RATE_LIMIT_RETRIES` | `0` | 上游 `TOO_MANY_REQUESTS` 重试次数（硬限流时建议保持 0） |
+| `METASO_HTTP_PROXY` | （空） | 出站代理；机房 IP 易被限流。也可用 `HTTPS_PROXY` / `HTTP_PROXY` |
+| `METASO_CHAT_MODEL` | `fast_thinking` | 对话接口上游 model（对齐官网抓包） |
 | `METASO_LOG_LEVEL` | `INFO` | 日志级别 |
 
 ## 说明

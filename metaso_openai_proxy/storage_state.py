@@ -32,16 +32,35 @@ def extract_uid_sid(state: dict[str, Any]) -> tuple[str | None, str | None]:
     return uid, sid
 
 
+def _cookie_domain_ok(domain: str) -> bool:
+    d = (domain or "").strip().lower().lstrip(".")
+    if not d:
+        return False
+    # files.metaso.cn 等子域 Cookie 不应塞进主站请求
+    if d != "metaso.cn" and not d.endswith(".metaso.cn"):
+        return False
+    if d.startswith("files."):
+        return False
+    return True
+
+
 def extract_cookie_header(state: dict[str, Any]) -> str:
-    parts: list[str] = []
+    """拼 Cookie 头：仅 metaso.cn 系、跳过空值，同名后者覆盖。"""
+    by_name: dict[str, str] = {}
     for cookie in state.get("cookies") or []:
         if not isinstance(cookie, dict):
             continue
         name = cookie.get("name")
-        if not name or cookie.get("value") is None:
+        value = cookie.get("value")
+        if not name or value is None:
             continue
-        parts.append(f"{name}={cookie['value']}")
-    return "; ".join(parts)
+        text = str(value)
+        if not text:
+            continue
+        if not _cookie_domain_ok(str(cookie.get("domain") or "metaso.cn")):
+            continue
+        by_name[str(name)] = text
+    return "; ".join(f"{k}={v}" for k, v in by_name.items())
 
 
 def storage_state_login_issue(state: dict[str, Any]) -> str | None:

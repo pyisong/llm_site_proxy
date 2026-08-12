@@ -23,7 +23,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-COPY cursor_automation.py openai_bridge.py image_generation.py log_utils.py skills_store.py skill_usage.py skills_jobs.py console_ingest.py ./
+COPY cursor_automation.py openai_bridge.py image_generation.py log_utils.py response_hoist.py skills_store.py skill_usage.py skills_jobs.py console_ingest.py ./
 
 EXPOSE 8765
 

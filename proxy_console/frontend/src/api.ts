@@ -175,6 +175,44 @@ export const api = {
     }>("/api/auth-status"),
   markRefreshed: (proxyId: string) =>
     json(`/api/auth/${proxyId}/mark-refreshed`, { method: "POST" }),
+  loginSites: () =>
+    json<{
+      items: {
+        proxy_id: string;
+        name: string;
+        home_url: string;
+        kind: string;
+        notes: string;
+        storage_path: string;
+      }[];
+    }>("/api/login-sites"),
+  startLoginSession: (proxyId: string) =>
+    json<{
+      session_id: string;
+      proxy_id: string;
+      name: string;
+      home_url: string;
+      notes: string;
+      ws_path: string;
+      viewport: { width: number; height: number };
+    }>("/api/login-sessions", {
+      method: "POST",
+      body: JSON.stringify({ proxy_id: proxyId }),
+    }),
+  saveLoginSession: (sessionId: string) =>
+    json<{
+      ok: boolean;
+      proxy_id: string;
+      storage_path: string;
+      reload?: { ok?: boolean; attempted?: boolean; error?: string; status_code?: number };
+    }>(`/api/login-sessions/${encodeURIComponent(sessionId)}/save`, {
+      method: "POST",
+    }),
+  closeLoginSession: (sessionId: string) =>
+    json<{ status: string }>(
+      `/api/login-sessions/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE" },
+    ),
   skills: () =>
     json<{ skills: SkillItem[]; source?: string; error?: string }>(
       "/api/skills",
@@ -283,4 +321,34 @@ export function authTone(state: string): string {
   if (state === "ok") return "text-ok";
   if (state === "login_required") return "text-fail";
   return "text-warn";
+}
+
+/** SKILL.md 描述常含 \\n / 超长触发词；列表只展示首句摘要。 */
+export function skillBlurb(
+  description?: string | null,
+  maxLen = 96,
+): string {
+  if (!description?.trim()) return "无描述";
+  const normalized = description
+    .replace(/\\n/g, "\n")
+    .replace(/\\"/g, '"')
+    .replace(/\r/g, "")
+    .trim();
+  const firstLine =
+    normalized
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) || normalized;
+  const compact = firstLine.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLen) return compact;
+  return `${compact.slice(0, Math.max(1, maxLen - 1))}…`;
+}
+
+export function skillDescriptionFull(description?: string | null): string {
+  if (!description?.trim()) return "";
+  return description
+    .replace(/\\n/g, "\n")
+    .replace(/\\"/g, '"')
+    .replace(/\r/g, "")
+    .trim();
 }

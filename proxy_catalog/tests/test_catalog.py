@@ -40,6 +40,15 @@ def test_services_live_probe_and_by_capability(monkeypatch):
     assert qwen["internal_base_url"] == "http://qwen-openai-proxy:8000/v1"
     assert set(qwen["capabilities"]) == {"llm", "image", "video"}
     assert qwen["models"][0]["id"] == "qwen-openai-proxy-model"
+    assert qwen["route_kind"] == "web_proxy"
+    assert qwen["short_name"] == "Qwen"
+    assert qwen["ui_schema"]["fields"][0]["key"] == "qwen_web_mode"
+    assert qwen["session"]["supports_new_chat"] is True
+    assert "llm" in qwen["models"][0]["capabilities"]
+
+    cursor = next(s for s in payload["services"] if s["id"] == "cursor-openai-bridge")
+    assert cursor["route_kind"] == "cursor_bridge"
+    assert cursor["ui_schema"] is None
 
     tts = next(s for s in payload["services"] if s["id"] == "azure-tts-http-api")
     assert tts["base_url"] == "http://10.1.10.113:8787"
@@ -57,6 +66,8 @@ def test_services_live_probe_and_by_capability(monkeypatch):
     assert metaso["base_url"] == "http://10.1.10.113:18006/v1"
     assert set(metaso["capabilities"]) == {"llm", "search"}
     assert metaso["endpoints"]["search"] == "/v1/metaso/search"
+    assert metaso["ui_schema"]["fields"][0]["key"] == "metaso_mode"
+    assert metaso["ui_schema"]["fields"][1]["key"] == "metaso_scope"
     assert any(x["id"] == "metaso-openai-proxy" for x in payload["by_capability"]["search"])
 
 

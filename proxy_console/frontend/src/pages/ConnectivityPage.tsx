@@ -7,6 +7,7 @@ import {
   type ConnectivityPayload,
   type RequestEvent,
 } from "../api";
+import LoginRefreshModal from "../components/LoginRefreshModal";
 import {
   ErrorBanner,
   GhostButton,
@@ -17,6 +18,14 @@ import {
   Skeleton,
   StatusPill,
 } from "../components/ui";
+
+const LOGIN_REFRESH_PROXY_IDS = new Set([
+  "deepseek-openai-proxy",
+  "kimi-openai-proxy",
+  "stepfun-openai-proxy",
+  "qwen-openai-proxy",
+  "metaso-openai-proxy",
+]);
 
 type ProbeResult = {
   id: string;
@@ -69,6 +78,10 @@ export default function ConnectivityPage() {
   const [elapsed, setElapsed] = useState(0);
   const [lastBatch, setLastBatch] = useState<ProbeResult[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loginTarget, setLoginTarget] = useState<{
+    proxyId: string;
+    name: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -398,7 +411,7 @@ export default function ConnectivityPage() {
 
       <Reveal delay={0.08}>
         <h2 className="text-lg font-semibold tracking-tight mb-3">登录与保活</h2>
-        <div className="grid md:grid-cols-2 gap-3">
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
           {auth.map((a) => (
             <Panel key={a.proxy_id} className="p-4">
               <div className="flex items-start justify-between gap-3">
@@ -423,15 +436,47 @@ export default function ConnectivityPage() {
                 <span>ok {fmtTime(a.last_ok_at)}</span>
                 <span>fail {fmtTime(a.last_fail_at)}</span>
               </div>
-              {a.state === "login_required" ? (
+              {LOGIN_REFRESH_PROXY_IDS.has(a.proxy_id) ? (
+                <div className="mt-4 space-y-2">
+                  {a.state === "login_required" ? (
+                    <div className="rounded-md border border-fail/30 bg-fail/5 p-3">
+                      <div className="flex items-center gap-2 text-sm text-fail">
+                        <SignIn size={16} weight="bold" />
+                        需要刷新登录态
+                      </div>
+                      <p className="mt-2 text-[13px] text-muted leading-relaxed">
+                        可在下方打开站点登录页，登录后点「保存登录态」自动写回
+                        secrets/*_storage.json。
+                      </p>
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <PrimaryButton
+                      disabled={busy !== null}
+                      onClick={() =>
+                        setLoginTarget({ proxyId: a.proxy_id, name: a.name })
+                      }
+                    >
+                      网页刷新登录
+                    </PrimaryButton>
+                    {a.state === "login_required" ? (
+                      <GhostButton
+                        disabled={busy !== null}
+                        onClick={() => void markRefreshed(a.proxy_id)}
+                      >
+                        我已手动刷新
+                      </GhostButton>
+                    ) : null}
+                  </div>
+                </div>
+              ) : a.state === "login_required" ? (
                 <div className="mt-4 rounded-md border border-fail/30 bg-fail/5 p-3">
                   <div className="flex items-center gap-2 text-sm text-fail">
                     <SignIn size={16} weight="bold" />
                     需要刷新登录态
                   </div>
                   <p className="mt-2 text-[13px] text-muted leading-relaxed">
-                    在对应 proxy 目录重新运行 save_storage_state，登录站点并导出
-                    secrets/*_storage.json 后，点击下方确认。下次探针会验证。
+                    在对应 proxy 目录重新运行 save_storage_state 后确认。
                   </p>
                   <div className="mt-3">
                     <PrimaryButton
@@ -447,6 +492,17 @@ export default function ConnectivityPage() {
           ))}
         </div>
       </Reveal>
+      {loginTarget ? (
+        <LoginRefreshModal
+          proxyId={loginTarget.proxyId}
+          name={loginTarget.name}
+          onClose={() => setLoginTarget(null)}
+          onSaved={() => {
+            setLoginTarget(null);
+            void load();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

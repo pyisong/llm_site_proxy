@@ -28,6 +28,7 @@ PROXY_PORTS = {
     "kimi-openai-proxy": int(os.getenv("KIMI_PROXY_PORT", "18003")),
     "stepfun-openai-proxy": int(os.getenv("STEPFUN_PROXY_PORT", "18004")),
     "qwen-openai-proxy": int(os.getenv("QWEN_PROXY_PORT", "18005")),
+    "metaso-openai-proxy": int(os.getenv("METASO_PROXY_PORT", "18006")),
     "cursor-openai-bridge": int(os.getenv("CURSOR_BRIDGE_PORT", "8765")),
     "azure-tts-http-api": int(
         os.getenv("AZURE_TTS_HTTP_PORT") or os.getenv("AZURE_TTS_PORT", "8787")
@@ -39,6 +40,7 @@ PROXY_DOCKER_ROOTS = {
     "kimi-openai-proxy": "http://kimi-openai-proxy:8000",
     "stepfun-openai-proxy": "http://stepfun-openai-proxy:8000",
     "qwen-openai-proxy": "http://qwen-openai-proxy:8000",
+    "metaso-openai-proxy": "http://metaso-openai-proxy:8000",
     "cursor-openai-bridge": "http://cursor-openai-bridge:8765",
     "azure-tts-http-api": "http://azure-tts-http-api:8787",
 }
@@ -48,6 +50,7 @@ DEFAULT_CHAT_MODELS = {
     "kimi-openai-proxy": "kimi-chat-web",
     "stepfun-openai-proxy": "stepfun-chat-web",
     "qwen-openai-proxy": "qwen-chat-web",
+    "metaso-openai-proxy": "metaso-chat-web",
     "cursor-openai-bridge": "composer-2",
 }
 
@@ -69,6 +72,7 @@ def _auth_headers(proxy_id: str) -> dict[str, str]:
         "kimi-openai-proxy": "KIMI_PROXY_API_KEY",
         "stepfun-openai-proxy": "STEPFUN_PROXY_API_KEY",
         "qwen-openai-proxy": "QWEN_PROXY_API_KEY",
+        "metaso-openai-proxy": "METASO_PROXY_API_KEY",
     }
     key = (os.getenv(env_map.get(proxy_id, ""), "") or "local-secret").strip()
     return {"Authorization": f"Bearer {key}"}

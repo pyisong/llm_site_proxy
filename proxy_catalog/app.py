@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Query, Request
 
-from registry import KNOWN_CAPABILITIES, SERVICES, ProxyService
+from registry import KNOWN_CAPABILITIES, SERVICES, ProxyService, infer_model_capabilities
 
 PROBE_TIMEOUT = float(os.getenv("CATALOG_PROBE_TIMEOUT", "2.0"))
 
@@ -70,11 +70,21 @@ async def _probe_one(
                 payload = mresp.json()
                 data = payload.get("data") if isinstance(payload, dict) else None
                 if isinstance(data, list):
-                    models = [
-                        {"id": item.get("id"), "object": item.get("object", "model")}
-                        for item in data
-                        if isinstance(item, dict) and item.get("id")
-                    ]
+                    models = []
+                    for item in data:
+                        if not isinstance(item, dict) or not item.get("id"):
+                            continue
+                        mid = str(item.get("id"))
+                        caps = item.get("capabilities")
+                        if not isinstance(caps, list) or not caps:
+                            caps = infer_model_capabilities(mid, svc.capabilities)
+                        models.append(
+                            {
+                                "id": mid,
+                                "object": item.get("object", "model"),
+                                "capabilities": [str(c) for c in caps if c],
+                            }
+                        )
                 else:
                     error = (error + "; " if error else "") + "models: unexpected payload"
             else:
@@ -85,12 +95,16 @@ async def _probe_one(
     item: dict[str, Any] = {
         "id": svc.id,
         "name": svc.name,
+        "short_name": svc.display_name(),
         "status": status,
         "base_url": svc.public_base_url(public_host),
         "internal_base_url": svc.internal_base_url(),
         "capabilities": list(svc.capabilities),
         "endpoints": svc.endpoints.as_dict(),
         "models": models,
+        "route_kind": svc.route_kind,
+        "ui_schema": svc.ui_schema,
+        "session": svc.session.as_dict() if svc.session else None,
     }
     if error and status == "offline":
         item["error"] = error

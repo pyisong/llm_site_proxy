@@ -14,3 +14,4 @@ test
 applescript
 open_in_cursor.sh
 docker-compose.override.yml
+.cursor_bridge_generated

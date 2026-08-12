@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from models_map import MODEL_IDS, resolve_search_profile
+from models_map import PRIMARY_MODEL_IDS, resolve_search_profile
 from storage_state import (
     extract_cookie_header,
     load_storage_state,
@@ -82,6 +82,70 @@ def last_user_query(messages: list[dict[str, object]]) -> str:
     return last
 
 
+def compose_browser_prompt(messages: list[dict[str, object]], *, reuse_session: bool = False) -> str:
+    """与 DeepSeek/Kimi 等代理一致：把 system 拼进发给网页的提示。
+
+    Metaso 上游只有单一 question 字段；若只传最后一条 user，会丢掉 JSON 约束等
+    system 指令，导致 format / 配图提示词等结构化任务失败。
+    """
+    role_names = {
+        "system": "System",
+        "user": "User",
+        "assistant": "Assistant",
+        "tool": "Tool",
+    }
+    if reuse_session:
+        system_text = ""
+        last_user_text = ""
+        for message in messages:
+            role = str(message.get("role", "user"))
+            content = _message_content_to_text(message.get("content"))
+            if not content:
+                continue
+            if role == "system":
+                system_text = content
+            elif role == "user":
+                last_user_text = content
+        lines: list[str] = []
+        if system_text:
+            lines.append(f"{role_names['system']}: {system_text}")
+        if last_user_text:
+            lines.append(f"{role_names['user']}: {last_user_text}")
+        return "\n\n".join(lines).strip()
+
+    lines = []
+    for message in messages:
+        role = str(message.get("role", "user"))
+        content = _message_content_to_text(message.get("content"))
+        if content:
+            lines.append(f"{role_names.get(role, role.title())}: {content}")
+    return "\n\n".join(lines).strip()
+
+
+def completion_text_from_result(
+    result: dict[str, Any],
+    *,
+    response_format: object | None = None,
+) -> str:
+    """优先返回无「参考来源」附录的 raw_content，避免破坏 JSON 结构化输出。"""
+    raw = str(result.get("raw_content") or "").strip()
+    display = str(result.get("content") or "").strip()
+    want_json = (
+        isinstance(response_format, dict)
+        and str(response_format.get("type") or "").strip().lower() == "json_object"
+    )
+    stripped = raw.lstrip()
+    if raw and (
+        want_json
+        or stripped.startswith("{")
+        or stripped.startswith("[")
+        or stripped.startswith("```")
+        or ("参考来源" in display and "参考来源" not in raw)
+    ):
+        return raw
+    return display or raw
+
+
 def _parse_bool(value: object, default: bool) -> bool:
     if value is None:
         return default
@@ -98,7 +162,13 @@ def _parse_bool(value: object, default: bool) -> bool:
     return default
 
 
-def resolve_new_chat(payload: dict[str, Any], *, header: str | None, default: bool) -> bool:
+def resolve_new_chat(
+    payload: dict[str, Any],
+    *,
+    header: str | None,
+    default: bool,
+    session_id: str | None = None,
+) -> bool:
     if "new_chat" in payload:
         return _parse_bool(payload.get("new_chat"), default)
     meta = payload.get("metadata")
@@ -106,6 +176,9 @@ def resolve_new_chat(payload: dict[str, Any], *, header: str | None, default: bo
         return _parse_bool(meta.get("new_chat"), default)
     if header is not None:
         return _parse_bool(header, default)
+    # 带了逻辑 session_id 且未显式指定时，默认续聊（避免 METASO_NEW_CHAT_PER_REQUEST=1 误开新会话）
+    if session_id:
+        return False
     return default
 
 
@@ -175,7 +248,14 @@ def map_upstream_error(exc: Exception) -> JSONResponse:
     if isinstance(exc, MetasoAuthError):
         return _error(503, str(exc), "authentication_error")
     if isinstance(exc, MetasoRateLimitError):
-        return _error(503, str(exc), "rate_limit_error")
+        # 上游 searchV2 SSE 常以 200 + data:[TOO_MANY_REQUESTS] 返回；对外用 429
+        msg = str(exc) or "秘塔限流"
+        if "TOO_MANY_REQUESTS" in msg and "出口" not in msg:
+            msg = (
+                "秘塔限流 TOO_MANY_REQUESTS（登录态通常仍有效；"
+                "机房出口易被封，请配置 METASO_HTTP_PROXY 或更换出口 IP）"
+            )
+        return _error(429, msg, "rate_limit_error")
     if isinstance(exc, MetasoUpstreamError):
         return _error(502, str(exc), "api_error")
     if isinstance(exc, ValueError):
@@ -201,6 +281,15 @@ def discover_storage_state_file() -> Path | None:
     return None
 
 
+def _resolve_outbound_proxy() -> str | None:
+    """出站代理：优先 METASO_HTTP_PROXY，其次 HTTPS_PROXY / HTTP_PROXY。"""
+    for key in ("METASO_HTTP_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+        val = (os.getenv(key) or "").strip()
+        if val:
+            return val
+    return None
+
+
 def build_web_client_from_env() -> MetasoWebClient:
     path = discover_storage_state_file()
     if path is None:
@@ -213,7 +302,10 @@ def build_web_client_from_env() -> MetasoWebClient:
         raise MetasoAuthError(issue)
     cookie = extract_cookie_header(state)
     timeout = float(os.getenv("METASO_TIMEOUT", "300"))
-    return MetasoWebClient(cookie_header=cookie, timeout=timeout)
+    proxy = _resolve_outbound_proxy()
+    if proxy:
+        logger.info("metaso outbound proxy enabled: %s", proxy)
+    return MetasoWebClient(cookie_header=cookie, timeout=timeout, proxy=proxy)
 
 
 def create_app(
@@ -224,7 +316,7 @@ def create_app(
 ) -> FastAPI:
     if local_api_key is None:
         local_api_key = os.getenv("METASO_PROXY_API_KEY", "local-secret")
-    default_new_chat = _parse_bool(os.getenv("METASO_NEW_CHAT_PER_REQUEST", "1"), True)
+    default_new_chat = _parse_bool(os.getenv("METASO_NEW_CHAT_PER_REQUEST", "0"), False)
 
     state: dict[str, Any] = {"client": web_client}
 
@@ -262,6 +354,27 @@ def create_app(
             state["client"] = client
         return client
 
+    @app.post("/v1/admin/reload-storage")
+    async def reload_storage(authorization: str | None = Header(default=None)):
+        """热加载 secrets 中的 storage（proxy-console 登录刷新后调用）。不重启进程。"""
+        _require_local_key(authorization, local_api_key)
+        if skip_storage:
+            raise HTTPException(400, detail="storage disabled")
+        old = state.get("client")
+        try:
+            client = build_web_client_from_env()
+            await client.ensure_ready()
+        except Exception as exc:
+            return map_upstream_error(exc)
+        state["client"] = client
+        if old is not None and old is not client:
+            try:
+                await old.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+        logger.info("metaso storage reloaded")
+        return {"ok": True, "reloaded": True}
+
     @app.get("/health")
     async def health():
         client = state.get("client")
@@ -288,7 +401,7 @@ def create_app(
             "object": "list",
             "data": [
                 {"id": mid, "object": "model", "owned_by": "metaso-web"}
-                for mid in MODEL_IDS
+                for mid in PRIMARY_MODEL_IDS
             ],
         }
 
@@ -306,20 +419,34 @@ def create_app(
         if not isinstance(messages, list) or not messages:
             return _error(400, "messages is required", "invalid_request_error")
 
-        query = last_user_query(messages)
-        if not query:
-            return _error(400, "missing user message", "invalid_request_error")
-
-        model = str(payload.get("model") or "metaso-detail")
+        model = str(payload.get("model") or "metaso-chat-web")
         profile = resolve_profile_from_request(payload, {k.lower(): v for k, v in request.headers.items()})
+        session_id = _pick_str(
+            payload.get("session_id"),
+            (payload.get("metadata") or {}).get("session_id")
+            if isinstance(payload.get("metadata"), dict)
+            else None,
+        )
         new_chat = resolve_new_chat(
             payload,
             header=request.headers.get("x-metaso-new-chat"),
             default=default_new_chat,
+            session_id=session_id,
         )
-        session_id = _pick_str(payload.get("session_id"), (payload.get("metadata") or {}).get("session_id") if isinstance(payload.get("metadata"), dict) else None)
+        query = compose_browser_prompt(messages, reuse_session=not new_chat)
+        if not query:
+            return _error(400, "missing user/system message content", "invalid_request_error")
+
         stream = _parse_bool(payload.get("stream"), False)
         request_id = new_request_id()
+        logger.info(
+            "chat.request model=%s new_chat=%s session_id=%s stream=%s prompt_chars=%s",
+            model,
+            new_chat,
+            session_id or "-",
+            stream,
+            len(query),
+        )
 
         try:
             client = get_client()
@@ -351,7 +478,12 @@ def create_app(
                                     model=model,
                                     request_id=request_id,
                                 ).encode()
-                        if citations:
+                        rf = payload.get("response_format")
+                        want_json = (
+                            isinstance(rf, dict)
+                            and str(rf.get("type") or "").strip().lower() == "json_object"
+                        )
+                        if citations and not want_json:
                             appendix = "\n\n参考来源:\n" + "\n".join(
                                 f"{i}. {c.get('title') or c.get('link')} — {c.get('link')}"
                                 for i, c in enumerate(citations, 1)
@@ -381,7 +513,11 @@ def create_app(
                 session_id=session_id,
                 new_chat=new_chat,
             )
-            body = openai_completion(result.get("content") or "", model=model, request_id=request_id)
+            text = completion_text_from_result(
+                result,
+                response_format=payload.get("response_format"),
+            )
+            body = openai_completion(text, model=model, request_id=request_id)
             if result.get("session_id"):
                 body["session_id"] = result["session_id"]
             return JSONResponse(body)
