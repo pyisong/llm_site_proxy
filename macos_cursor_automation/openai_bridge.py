@@ -119,9 +119,18 @@ try:
         install_from_zip_bytes,
         installed_skill_names,
         list_skills,
+        list_skills_payload,
     )
     from .skills_jobs import get_job as get_install_job
     from .skills_jobs import start_install_job
+    from .skill_meta_store import (
+        SkillMetaError,
+        create_tag,
+        delete_tag,
+        list_tags,
+        patch_skill_meta,
+        update_tag,
+    )
 except ImportError:
     from cursor_automation import (
         AgentMode,
@@ -149,9 +158,18 @@ except ImportError:
         install_from_zip_bytes,
         installed_skill_names,
         list_skills,
+        list_skills_payload,
     )
     from skills_jobs import get_job as get_install_job
     from skills_jobs import start_install_job
+    from skill_meta_store import (
+        SkillMetaError,
+        create_tag,
+        delete_tag,
+        list_tags,
+        patch_skill_meta,
+        update_tag,
+    )
 
 try:
     from .image_generation import (
@@ -1110,15 +1128,18 @@ def _log_skill_usage_for_request(
         _init_bridge_logging().debug("skill_usage log skipped: %s", e)
 
 
-def _skills_http_error(exc: SkillStoreError) -> JSONResponse:
+def _skills_http_error(exc: SkillStoreError | SkillMetaError) -> JSONResponse:
     _init_bridge_logging().warning(
         "skills error status=%s msg=%s",
-        exc.status_code,
-        exc.message,
+        getattr(exc, "status_code", 400),
+        getattr(exc, "message", str(exc)),
     )
     return JSONResponse(
-        status_code=int(exc.status_code),
-        content=_openai_error(exc.message, type_="invalid_request_error"),
+        status_code=int(getattr(exc, "status_code", 400) or 400),
+        content=_openai_error(
+            getattr(exc, "message", str(exc)),
+            type_="invalid_request_error",
+        ),
     )
 
 
@@ -1268,7 +1289,142 @@ def create_app(
 
     @app.get("/v1/skills")
     async def skills_list():
-        return {"skills": list_skills()}
+        return list_skills_payload()
+
+    @app.get("/v1/skills/tags")
+    async def skills_tags_list():
+        return {"tags": list_tags()}
+
+    @app.post("/v1/skills/tags")
+    async def skills_tags_create(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体须为 JSON"),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体格式错误"),
+            )
+        try:
+            return create_tag(
+                tag_id=str(body.get("id") or ""),
+                label=(str(body["label"]) if body.get("label") is not None else None),
+                color=(str(body["color"]) if body.get("color") is not None else None),
+            )
+        except SkillMetaError as e:
+            return _skills_http_error(e)
+
+    @app.patch("/v1/skills/tags/{tag_id}")
+    async def skills_tags_update(tag_id: str, request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体须为 JSON"),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体格式错误"),
+            )
+        try:
+            return update_tag(
+                tag_id,
+                label=(str(body["label"]) if body.get("label") is not None else None),
+                color=(str(body["color"]) if body.get("color") is not None else None),
+                new_id=(str(body["new_id"]) if body.get("new_id") is not None else None),
+            )
+        except SkillMetaError as e:
+            return _skills_http_error(e)
+
+    @app.delete("/v1/skills/tags/{tag_id}")
+    async def skills_tags_delete(tag_id: str):
+        try:
+            return delete_tag(tag_id)
+        except SkillMetaError as e:
+            return _skills_http_error(e)
+
+    @app.put("/v1/skills/{name}/tags")
+    async def skills_set_tags(name: str, request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体须为 JSON"),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体格式错误"),
+            )
+        raw_tags = body.get("tags")
+        if not isinstance(raw_tags, list):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("tags 须为字符串数组"),
+            )
+        try:
+            # 确认 skill 存在
+            item = get_skill(name)
+            if item is None:
+                return JSONResponse(
+                    status_code=404,
+                    content=_openai_error(f"skill 不存在: {name}", type_="invalid_request_error"),
+                )
+            tags = patch_skill_meta(name, tags=[str(x) for x in raw_tags]).get("tags") or []
+            refreshed = get_skill(name) or item
+            refreshed["tags"] = tags
+            refreshed["tag_ids"] = [t["id"] for t in tags]
+            return refreshed
+        except (SkillStoreError, SkillMetaError) as e:
+            return _skills_http_error(e)
+
+    @app.patch("/v1/skills/{name}/meta")
+    async def skills_patch_meta(name: str, request: Request):
+        """更新 skill 的 tags 和/或分类覆盖。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体须为 JSON"),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_openai_error("请求体格式错误"),
+            )
+        try:
+            item = get_skill(name)
+            if item is None:
+                return JSONResponse(
+                    status_code=404,
+                    content=_openai_error(f"skill 不存在: {name}", type_="invalid_request_error"),
+                )
+            tags_arg = body.get("tags")
+            if tags_arg is not None and not isinstance(tags_arg, list):
+                return JSONResponse(
+                    status_code=400,
+                    content=_openai_error("tags 须为字符串数组"),
+                )
+            clear_cat = bool(body.get("clear_category"))
+            cat = body.get("category")
+            patch_skill_meta(
+                name,
+                tags=([str(x) for x in tags_arg] if isinstance(tags_arg, list) else None),
+                category=(str(cat) if cat is not None and not clear_cat else None),
+                clear_category=clear_cat,
+            )
+            refreshed = get_skill(name)
+            return refreshed or item
+        except (SkillStoreError, SkillMetaError) as e:
+            return _skills_http_error(e)
 
     @app.get("/v1/skills/{name}")
     async def skills_get(name: str, include_body: int = 0):

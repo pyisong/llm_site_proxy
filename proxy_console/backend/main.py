@@ -59,6 +59,24 @@ class SkillDisableBody(BaseModel):
     reason: str | None = None
 
 
+class SkillTagBody(BaseModel):
+    id: str
+    label: str | None = None
+    color: str | None = None
+
+
+class SkillTagUpdateBody(BaseModel):
+    label: str | None = None
+    color: str | None = None
+    new_id: str | None = None
+
+
+class SkillMetaPatchBody(BaseModel):
+    tags: list[str] | None = None
+    category: str | None = None
+    clear_category: bool = False
+
+
 class SkillUsageIngest(BaseModel):
     skill_name: str
     label: str = "evidenced"
@@ -313,6 +331,8 @@ async def api_skills() -> dict[str, Any]:
         )
     return {
         "skills": skills,
+        "categories": remote.get("categories") or [],
+        "tags": remote.get("tags") or [],
         "source": remote.get("source"),
         "error": remote.get("error"),
     }
@@ -378,6 +398,50 @@ def api_skills_enable(name: str) -> dict[str, Any]:
 @app.get("/api/skills/{name}/usage")
 def api_skills_usage(name: str, limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
     return {"items": db.skill_usage_detail(name, limit)}
+
+
+@app.get("/api/skills-tags")
+async def api_skills_tags() -> Any:
+    status, payload = await skills_proxy.list_tags()
+    if status >= 400:
+        raise HTTPException(status, payload)
+    return payload
+
+
+@app.post("/api/skills-tags")
+async def api_skills_tags_create(body: SkillTagBody) -> Any:
+    status, payload = await skills_proxy.create_tag(body.model_dump(exclude_none=True))
+    if status >= 400:
+        raise HTTPException(status, payload)
+    return payload
+
+
+@app.patch("/api/skills-tags/{tag_id}")
+async def api_skills_tags_update(tag_id: str, body: SkillTagUpdateBody) -> Any:
+    status, payload = await skills_proxy.update_tag(
+        tag_id, body.model_dump(exclude_none=True)
+    )
+    if status >= 400:
+        raise HTTPException(status, payload)
+    return payload
+
+
+@app.delete("/api/skills-tags/{tag_id}")
+async def api_skills_tags_delete(tag_id: str) -> Any:
+    status, payload = await skills_proxy.delete_tag(tag_id)
+    if status >= 400:
+        raise HTTPException(status, payload)
+    return payload
+
+
+@app.patch("/api/skills/{name}/meta")
+async def api_skills_patch_meta(name: str, body: SkillMetaPatchBody) -> Any:
+    status, payload = await skills_proxy.patch_skill_meta(
+        name, body.model_dump(exclude_none=True)
+    )
+    if status >= 400:
+        raise HTTPException(status, payload)
+    return payload
 
 
 @app.post("/api/ingest/skill-usage")

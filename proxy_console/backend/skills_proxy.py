@@ -86,15 +86,23 @@ async def list_skills() -> dict[str, Any]:
             if resp.status_code >= 400:
                 return {
                     "skills": [],
+                    "categories": [],
+                    "tags": [],
                     "error": f"bridge HTTP {resp.status_code}",
                     "source": "bridge",
                 }
             data = resp.json()
             data["source"] = "bridge"
+            if "tags" not in data:
+                data["tags"] = []
+            if "categories" not in data:
+                data["categories"] = []
             return data
     except Exception as exc:  # noqa: BLE001
         return {
             "skills": _fallback_skills(),
+            "categories": [],
+            "tags": [],
             "error": str(exc),
             "source": "fallback",
         }
@@ -209,6 +217,85 @@ async def delete_skill(name: str) -> tuple[int, Any]:
         )
         try:
             payload = resp.json() if resp.content else {"ok": True}
+        except Exception:  # noqa: BLE001
+            payload = {"detail": resp.text}
+        return resp.status_code, payload
+
+
+async def list_tags() -> tuple[int, Any]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(f"{BRIDGE_URL}/v1/skills/tags", headers=_headers())
+        try:
+            payload = resp.json()
+        except Exception:  # noqa: BLE001
+            payload = {"detail": resp.text}
+        return resp.status_code, payload
+
+
+async def create_tag(body: dict[str, Any]) -> tuple[int, Any]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            f"{BRIDGE_URL}/v1/skills/tags",
+            headers=_headers(),
+            json=body,
+        )
+        try:
+            payload = resp.json()
+        except Exception:  # noqa: BLE001
+            payload = {"detail": resp.text}
+        return resp.status_code, payload
+
+
+async def update_tag(tag_id: str, body: dict[str, Any]) -> tuple[int, Any]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.patch(
+            f"{BRIDGE_URL}/v1/skills/tags/{tag_id}",
+            headers=_headers(),
+            json=body,
+        )
+        try:
+            payload = resp.json()
+        except Exception:  # noqa: BLE001
+            payload = {"detail": resp.text}
+        return resp.status_code, payload
+
+
+async def delete_tag(tag_id: str) -> tuple[int, Any]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.delete(
+            f"{BRIDGE_URL}/v1/skills/tags/{tag_id}",
+            headers=_headers(),
+        )
+        try:
+            payload = resp.json() if resp.content else {"ok": True}
+        except Exception:  # noqa: BLE001
+            payload = {"detail": resp.text}
+        return resp.status_code, payload
+
+
+async def patch_skill_meta(name: str, body: dict[str, Any]) -> tuple[int, Any]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.patch(
+            f"{BRIDGE_URL}/v1/skills/{name}/meta",
+            headers=_headers(),
+            json=body,
+        )
+        try:
+            payload = resp.json()
+        except Exception:  # noqa: BLE001
+            payload = {"detail": resp.text}
+        return resp.status_code, payload
+
+
+async def set_skill_tags(name: str, tags: list[str]) -> tuple[int, Any]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.put(
+            f"{BRIDGE_URL}/v1/skills/{name}/tags",
+            headers=_headers(),
+            json={"tags": tags},
+        )
+        try:
+            payload = resp.json()
         except Exception:  # noqa: BLE001
             payload = {"detail": resp.text}
         return resp.status_code, payload

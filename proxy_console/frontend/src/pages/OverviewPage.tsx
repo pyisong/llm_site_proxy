@@ -46,9 +46,12 @@ function formatWindowLabel(sec: number): string {
   return hit?.label ?? `${Math.round(sec / 3600)} 小时`;
 }
 
-function formatBucketHint(bucketSec: number): string {
+function formatBucketHint(bucketSec: number, calendarAligned?: boolean): string {
   if (bucketSec < 3600) return `每 ${Math.round(bucketSec / 60)} 分钟一段`;
   if (bucketSec < 86400) return `每 ${Math.round(bucketSec / 3600)} 小时一段`;
+  if (calendarAligned || bucketSec >= 86400) {
+    return "按自然日统计（含今天）";
+  }
   return `每 ${Math.round(bucketSec / 86400)} 天一段`;
 }
 
@@ -242,7 +245,7 @@ export default function OverviewPage() {
                       近 {windowLabel}请求量
                     </h2>
                     <p className="mt-0.5 text-[12px] text-muted">
-                      {formatBucketHint(bucketSec)} · 柱高 = 请求数 · 红段 =
+                      {formatBucketHint(bucketSec, data.calendar_aligned)} · 柱高 = 请求数 · 红段 =
                       失败
                     </p>
                   </div>

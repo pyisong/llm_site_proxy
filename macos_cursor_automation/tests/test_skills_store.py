@@ -177,6 +177,65 @@ class SkillsStoreTests(unittest.TestCase):
         with self.assertRaises(SkillStoreError):
             parse_github_skill_ref("npx skills add")
 
+    def test_parse_npx_skill_filter(self) -> None:
+        from skills_store import parse_github_skill_ref, parse_npx_skills_add
+
+        parsed = parse_npx_skills_add(
+            "npx skills add jimliu/baoyu-skills --skill baoyu-cover-image -s baoyu-comic"
+        )
+        self.assertEqual(parsed["repo_ref"], "jimliu/baoyu-skills")
+        self.assertEqual(
+            parsed["skill_names"],
+            ["baoyu-cover-image", "baoyu-comic"],
+        )
+
+        ref = parse_github_skill_ref(
+            "npx skills add jimliu/baoyu-skills --skill=baoyu-slide"
+        )
+        self.assertEqual(ref["clone_url"], "https://github.com/jimliu/baoyu-skills.git")
+        self.assertEqual(ref["skill_names"], ["baoyu-slide"])
+
+    def test_discover_and_install_multi_skills_layout(self) -> None:
+        from skills_store import _discover_skill_dirs, _install_from_extracted
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            root = td_path / "installed"
+            root.mkdir()
+            repo = td_path / "repo"
+            skills = repo / "skills"
+            _write_skill(skills, "baoyu-cover-image")
+            _write_skill(skills, "baoyu-comic")
+            (repo / "README.md").write_text("# mono\n", encoding="utf-8")
+
+            found = _discover_skill_dirs(repo)
+            self.assertEqual(
+                sorted(p.name for p in found),
+                ["baoyu-comic", "baoyu-cover-image"],
+            )
+
+            meta = _install_from_extracted(repo, overwrite=True, root=root)
+            self.assertEqual(meta["count"], 2)
+            self.assertEqual(
+                sorted(meta["installed_names"]),
+                ["baoyu-comic", "baoyu-cover-image"],
+            )
+            self.assertTrue((root / "baoyu-cover-image" / "SKILL.md").is_file())
+            self.assertTrue((root / "baoyu-comic" / "SKILL.md").is_file())
+
+            # --skill 过滤
+            root2 = td_path / "installed2"
+            root2.mkdir()
+            one = _install_from_extracted(
+                repo,
+                skill_names=["baoyu-comic"],
+                overwrite=True,
+                root=root2,
+            )
+            self.assertEqual(one["name"], "baoyu-comic")
+            self.assertTrue((root2 / "baoyu-comic" / "SKILL.md").is_file())
+            self.assertFalse((root2 / "baoyu-cover-image").exists())
+
     def test_install_from_zip_bytes_github_layout(self) -> None:
         from skills_store import install_from_zip_bytes
 

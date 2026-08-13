@@ -12,6 +12,7 @@ export type ServiceSummary = {
 export type Overview = {
   window_sec: number;
   bucket_sec?: number;
+  calendar_aligned?: boolean;
   kpi: {
     requests: number;
     errors: number;
@@ -54,6 +55,20 @@ export type ConnectivityPayload = {
   modes: string[];
 };
 
+export type SkillCategory = {
+  id: string;
+  label: string;
+  hint?: string;
+  accent?: string;
+  purposes?: string[];
+};
+
+export type SkillTag = {
+  id: string;
+  label: string;
+  color?: string;
+};
+
 export type SkillItem = {
   name: string;
   description?: string;
@@ -64,6 +79,16 @@ export type SkillItem = {
   disabled_reason?: string | null;
   uses: number;
   last_used_at?: number | null;
+  /** 由 bridge ``GET /v1/skills`` 动态下发 */
+  category?: string;
+  category_label?: string;
+  category_hint?: string;
+  category_accent?: string;
+  display_name?: string;
+  family?: string | null;
+  purposes?: string[];
+  tags?: SkillTag[];
+  tag_ids?: string[];
 };
 
 /** 把 Bridge / FastAPI 错误体收成一行可读文案（对齐其它页面的短错误风格）。 */
@@ -214,9 +239,38 @@ export const api = {
       { method: "DELETE" },
     ),
   skills: () =>
-    json<{ skills: SkillItem[]; source?: string; error?: string }>(
-      "/api/skills",
-    ),
+    json<{
+      skills: SkillItem[];
+      categories?: SkillCategory[];
+      tags?: SkillTag[];
+      source?: string;
+      error?: string;
+    }>("/api/skills"),
+  createSkillTag: (body: { id: string; label?: string; color?: string }) =>
+    json<SkillTag>("/api/skills-tags", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateSkillTag: (
+    tagId: string,
+    body: { label?: string; color?: string; new_id?: string },
+  ) =>
+    json<SkillTag>(`/api/skills-tags/${encodeURIComponent(tagId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteSkillTag: (tagId: string) =>
+    json<{ ok?: boolean }>(`/api/skills-tags/${encodeURIComponent(tagId)}`, {
+      method: "DELETE",
+    }),
+  patchSkillMeta: (
+    name: string,
+    body: { tags?: string[]; category?: string; clear_category?: boolean },
+  ) =>
+    json<SkillItem>(`/api/skills/${encodeURIComponent(name)}/meta`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   installSkill: (body: Record<string, unknown>) =>
     json<{
       name?: string;
@@ -230,7 +284,11 @@ export const api = {
       id: string;
       status: string;
       error?: string;
-      result?: { name?: string };
+      result?: {
+        name?: string;
+        count?: number;
+        installed_names?: string[];
+      };
       ref?: string;
     }>(`/api/skills/jobs/${encodeURIComponent(jobId)}`),
   uploadSkill: (opts: {

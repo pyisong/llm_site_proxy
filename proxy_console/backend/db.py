@@ -385,11 +385,30 @@ def overview_bucket_sec(window_sec: int) -> int:
     return 86400
 
 
+def _local_day_start(ts: float) -> float:
+    """服务器本地时区的自然日 00:00（epoch 秒）。"""
+    lt = time.localtime(ts)
+    return time.mktime(
+        (lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst)
+    )
+
+
 def overview(window_sec: int = 3600) -> dict[str, Any]:
     now = time.time()
     window_sec = max(300, min(int(window_sec), 30 * 86400))
-    since = now - window_sec
     bucket_sec = overview_bucket_sec(window_sec)
+
+    # 日粒度：按自然日对齐（含今天），避免滚动 24h 桶把今日请求标成「昨天」
+    calendar_days = bucket_sec >= 86400
+    if calendar_days:
+        n_buckets = max(1, window_sec // 86400)
+        today0 = _local_day_start(now)
+        since = today0 - (n_buckets - 1) * 86400
+        bucket_sec = 86400
+    else:
+        since = now - window_sec
+        n_buckets = max(1, window_sec // bucket_sec)
+
     with db() as conn:
         total = conn.execute(
             "SELECT COUNT(*) AS c FROM request_events WHERE created_at>=%s",
@@ -449,7 +468,6 @@ def overview(window_sec: int = 3600) -> dict[str, Any]:
 
     series = []
     buckets = {int(r["bucket"]): r for r in series_rows}
-    n_buckets = max(1, window_sec // bucket_sec)
     for b in range(n_buckets):
         row = buckets.get(b)
         series.append(
@@ -474,6 +492,7 @@ def overview(window_sec: int = 3600) -> dict[str, Any]:
         "services": services,
         "series": series,
         "generated_at": now,
+        "calendar_aligned": calendar_days,
     }
 
 

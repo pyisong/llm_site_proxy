@@ -131,7 +131,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 
 
 def parse_skill_md(path: Path) -> dict[str, Any]:
-    """解析 ``SKILL.md``，返回 name/description/valid。"""
+    """解析 ``SKILL.md``，返回 name/description/valid 及可选 category/type。"""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -141,12 +141,17 @@ def parse_skill_md(path: Path) -> dict[str, Any]:
     desc = (fm.get("description") or "").strip()
     folder = path.parent.name
     valid = bool(name) and bool(desc) and name == folder and bool(_SKILL_NAME_RE.fullmatch(name))
-    return {
+    out: dict[str, Any] = {
         "name": name or folder,
         "description": desc,
         "valid": bool(valid),
         "folder": folder,
     }
+    for key in ("category", "type"):
+        raw = fm.get(key)
+        if isinstance(raw, str) and raw.strip():
+            out[key] = raw.strip()
+    return out
 
 
 def _skill_meta(skill_dir: Path, *, include_body: bool = False) -> dict[str, Any]:
@@ -172,7 +177,11 @@ def _skill_meta(skill_dir: Path, *, include_body: bool = False) -> dict[str, Any
             item["body"] = md.read_text(encoding="utf-8")
         except OSError:
             item["body"] = ""
-    return item
+    try:
+        from skill_taxonomy import enrich_skill_item
+    except ImportError:
+        from .skill_taxonomy import enrich_skill_item  # type: ignore
+    return enrich_skill_item(item, frontmatter=parsed)
 
 
 def list_skills(root: Path | None = None) -> list[dict[str, Any]]:
@@ -180,21 +189,36 @@ def list_skills(root: Path | None = None) -> list[dict[str, Any]]:
     if not base.is_dir():
         return []
     items: list[dict[str, Any]] = []
+    try:
+        from skill_taxonomy import enrich_skill_item
+    except ImportError:
+        from .skill_taxonomy import enrich_skill_item  # type: ignore
     for child in sorted(base.iterdir(), key=lambda p: p.name):
         if not child.is_dir() or child.name.startswith("."):
             continue
         if not (child / "SKILL.md").is_file():
             items.append(
-                {
-                    "name": child.name,
-                    "description": "",
-                    "path": str(child.resolve()),
-                    "valid": False,
-                }
+                enrich_skill_item(
+                    {
+                        "name": child.name,
+                        "description": "",
+                        "path": str(child.resolve()),
+                        "valid": False,
+                    }
+                )
             )
             continue
         items.append(_skill_meta(child))
     return items
+
+
+def list_skills_payload(root: Path | None = None) -> dict[str, Any]:
+    """列表 + 分类目录（供 HTTP / 下游消费）。"""
+    try:
+        from skill_taxonomy import skills_list_payload
+    except ImportError:
+        from .skill_taxonomy import skills_list_payload  # type: ignore
+    return skills_list_payload(list_skills(root))
 
 
 def installed_skill_names(root: Path | None = None) -> list[str]:
@@ -252,6 +276,80 @@ def _atomic_promote(src_skill_dir: Path, dest: Path, *, overwrite: bool) -> None
         raise
 
 
+_SKIP_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".github",
+        ".claude-plugin",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".turbo",
+        "coverage",
+    }
+)
+
+
+def _discover_skill_dirs(extracted: Path, *, max_depth: int = 4) -> list[Path]:
+    """在解压/clone 根下发现含 ``SKILL.md`` 的目录（对齐 npx skills 多 skill 仓库）。
+
+    优先常见布局 ``skills/<name>/``、``.agents/skills/<name>/``；
+    否则 BFS 扫描（跳过 .git 等），深度默认 4。
+    """
+    root = extracted.resolve()
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(p: Path) -> None:
+        rp = p.resolve()
+        if rp in seen:
+            return
+        if not (rp / "SKILL.md").is_file():
+            return
+        # 避免把「含多个子 skill 的父目录」也算进去（父级不应有 SKILL.md；若有则只取叶子）
+        seen.add(rp)
+        found.append(rp)
+
+    if (root / "SKILL.md").is_file():
+        _add(root)
+        return found
+
+    for well_known in ("skills", ".agents/skills", ".cursor/skills"):
+        base = root / well_known
+        if not base.is_dir():
+            continue
+        for child in sorted(base.iterdir()):
+            if child.is_dir() and not child.name.startswith("."):
+                _add(child)
+        if found:
+            return found
+
+    # BFS：单 skill 在子目录、或非标准布局
+    queue: list[tuple[Path, int]] = [(root, 0)]
+    while queue:
+        cur, depth = queue.pop(0)
+        if depth > max_depth:
+            continue
+        try:
+            entries = sorted(cur.iterdir())
+        except OSError:
+            continue
+        for child in entries:
+            if not child.is_dir():
+                continue
+            name = child.name
+            if name.startswith(".") or name in _SKIP_DIR_NAMES:
+                continue
+            if (child / "SKILL.md").is_file():
+                _add(child)
+            elif depth + 1 <= max_depth:
+                queue.append((child, depth + 1))
+    return found
+
+
 def _resolve_skill_source_dir(extracted: Path, *, subdir: str | None) -> Path:
     if subdir:
         sub = (subdir or "").strip().lstrip("/")
@@ -262,16 +360,108 @@ def _resolve_skill_source_dir(extracted: Path, *, subdir: str | None) -> Path:
             raise SkillStoreError("subdir 越界", status_code=400)
         if not candidate.is_dir():
             raise SkillStoreError(f"subdir 不存在: {subdir}", status_code=400)
-        return candidate
-    if (extracted / "SKILL.md").is_file():
-        return extracted
-    kids = [p for p in extracted.iterdir() if p.is_dir() and not p.name.startswith(".")]
-    if len(kids) == 1 and (kids[0] / "SKILL.md").is_file():
-        return kids[0]
+        if (candidate / "SKILL.md").is_file():
+            return candidate
+        # subdir 指向 skills/ 集合目录时，交由上层批量逻辑；此处仍报清晰错误
+        nested = _discover_skill_dirs(candidate)
+        if len(nested) == 1:
+            return nested[0]
+        if len(nested) > 1:
+            raise SkillStoreError(
+                f"subdir={subdir!r} 下有 {len(nested)} 个 skill，请指定具体 skill 路径或用 --skill",
+                status_code=400,
+            )
+        raise SkillStoreError(f"subdir 内缺少 SKILL.md: {subdir}", status_code=400)
+    found = _discover_skill_dirs(extracted)
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        # 多 skill：调用方应走批量安装；保留旧错误语义的兼容入口
+        raise SkillStoreError(
+            f"仓库含 {len(found)} 个 skill，请用批量安装或指定 --skill / subdir",
+            status_code=400,
+        )
     raise SkillStoreError("未找到含 SKILL.md 的目录", status_code=400)
 
 
 _OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
+
+
+def parse_npx_skills_add(ref: str) -> dict[str, Any]:
+    """解析 ``npx skills add ...``，抽出仓库 ref 与可选 ``--skill`` 过滤。
+
+    返回 ``{repo_ref, skill_names: list[str]|None, all_skills: bool}``。
+    非 npx 命令时 ``repo_ref`` 为原串，``skill_names`` 为 None。
+    """
+    raw = (ref or "").strip()
+    if not raw:
+        raise SkillStoreError("git ref 不能为空", status_code=400)
+
+    m = re.match(
+        r"^(?:npx\s+)?skills\s+add(?:\s+(.+))?$",
+        raw,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return {"repo_ref": raw, "skill_names": None, "all_skills": False}
+
+    rest = (m.group(1) or "").strip()
+    if not rest:
+        raise SkillStoreError(
+            "npx skills add 后须跟 owner/repo 或 GitHub URL",
+            status_code=400,
+        )
+    tokens = rest.split()
+    pkg: str | None = None
+    skill_names: list[str] = []
+    all_skills = False
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("-"):
+            if tok in ("--all",):
+                all_skills = True
+                i += 1
+                continue
+            # --skill=name / --agent=cursor
+            if "=" in tok:
+                flag, _, val = tok.partition("=")
+                flag = flag.split("=", 1)[0]
+                if flag in ("-s", "--skill"):
+                    v = val.strip().strip("'\"")
+                    if v and v != "*":
+                        skill_names.append(v)
+                    elif v == "*":
+                        all_skills = True
+                i += 1
+                continue
+            flag = tok
+            if flag in ("-a", "--agent", "-s", "--skill") and i + 1 < len(tokens):
+                nxt = tokens[i + 1]
+                if not nxt.startswith("-"):
+                    if flag in ("-s", "--skill"):
+                        v = nxt.strip().strip("'\"")
+                        if v and v != "*":
+                            skill_names.append(v)
+                        elif v == "*":
+                            all_skills = True
+                    i += 2
+                    continue
+            i += 1
+            continue
+        if pkg is None:
+            pkg = tok
+        i += 1
+    if not pkg:
+        raise SkillStoreError(
+            "无法从 npx skills add 命令中解析仓库参数",
+            status_code=400,
+        )
+    return {
+        "repo_ref": pkg.strip().strip("'\""),
+        "skill_names": skill_names or None,
+        "all_skills": all_skills,
+    }
 
 
 def normalize_skill_git_ref(ref: str) -> str:
@@ -280,54 +470,13 @@ def normalize_skill_git_ref(ref: str) -> str:
     支持示例：
     - ``npx skills add alchaincyf/zhangxuefeng-skill``
     - ``npx skills add alchaincyf/zhangxuefeng-skill -a cursor``
+    - ``npx skills add jimliu/baoyu-skills --skill baoyu-cover-image``
     - ``skills add https://github.com/acme/foo.git --agent claude-code``
     - ``alchaincyf/zhangxuefeng-skill``
     - 原有的 https / git@ / github.com/... 地址（原样返回）
     """
-    raw = (ref or "").strip()
-    if not raw:
-        raise SkillStoreError("git ref 不能为空", status_code=400)
-
-    # 整段粘贴：npx skills add <pkg> [flags...] / skills add <pkg> ...
-    m = re.match(
-        r"^(?:npx\s+)?skills\s+add(?:\s+(.+))?$",
-        raw,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if m:
-        rest = (m.group(1) or "").strip()
-        if not rest:
-            raise SkillStoreError(
-                "npx skills add 后须跟 owner/repo 或 GitHub URL",
-                status_code=400,
-            )
-        tokens = rest.split()
-        pkg: str | None = None
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if tok.startswith("-"):
-                # --agent=cursor / -a=cursor
-                if "=" in tok:
-                    i += 1
-                    continue
-                flag = tok.split("=", 1)[0]
-                # 带值的短/长选项：跳过下一 token（若非另一 flag）
-                if flag in ("-a", "--agent", "-s", "--skill") and i + 1 < len(tokens):
-                    nxt = tokens[i + 1]
-                    if not nxt.startswith("-"):
-                        i += 2
-                        continue
-                i += 1
-                continue
-            pkg = tok
-            break
-        if not pkg:
-            raise SkillStoreError(
-                "无法从 npx skills add 命令中解析仓库参数",
-                status_code=400,
-            )
-        raw = pkg.strip().strip("'\"")
+    parsed = parse_npx_skills_add(ref)
+    raw = str(parsed["repo_ref"])
 
     # owner/repo 短名 → github HTTPS
     if _OWNER_REPO_RE.fullmatch(raw) and not raw.startswith("git@"):
@@ -339,19 +488,22 @@ def normalize_skill_git_ref(ref: str) -> str:
     return raw
 
 
-def parse_github_skill_ref(ref: str) -> dict[str, str | None]:
-    """将 GitHub 地址规范为 clone URL + 可选 branch/subdir。
+def parse_github_skill_ref(ref: str) -> dict[str, Any]:
+    """将 GitHub 地址规范为 clone URL + 可选 branch/subdir + skill 过滤。
 
     支持：
-    - npx skills add owner/repo [-a cursor]（先经 normalize_skill_git_ref）
+    - npx skills add owner/repo [-a cursor] [--skill name]
     - owner/repo
     - https://github.com/owner/repo[.git]
     - https://github.com/owner/repo/tree/<branch>[/<subdir...>]
     - git@github.com:owner/repo.git
     - github.com/owner/repo/...
     """
+    npx = parse_npx_skills_add(ref)
+    skill_names = npx.get("skill_names")
     raw = normalize_skill_git_ref(ref)
 
+    base: dict[str, Any]
     if raw.startswith("git@"):
         # git@github.com:owner/repo.git
         m = re.match(r"^git@([^:]+):(.+?)(?:\.git)?$", raw)
@@ -362,40 +514,43 @@ def parse_github_skill_ref(ref: str) -> dict[str, str | None]:
         if len(parts) < 2:
             raise SkillStoreError("GitHub 地址须含 owner/repo", status_code=400)
         owner, repo = parts[0], parts[1]
-        return {
+        base = {
             "clone_url": f"https://{host}/{owner}/{repo}.git",
             "branch": None,
             "subdir": None,
         }
+    else:
+        url = raw
+        if not re.match(r"^https?://", url, re.I):
+            url = "https://" + url.lstrip("/")
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if host not in ("github.com", "www.github.com"):
+            base = {"clone_url": raw.rstrip("/"), "branch": None, "subdir": None}
+        else:
+            segs = [s for s in (parsed.path or "").strip("/").split("/") if s]
+            if len(segs) < 2:
+                raise SkillStoreError("GitHub 地址须含 owner/repo", status_code=400)
+            owner, repo = segs[0], segs[1]
+            if repo.endswith(".git"):
+                repo = repo[: -len(".git")]
+            clone_url = f"https://github.com/{owner}/{repo}.git"
+            branch: str | None = None
+            subdir: str | None = None
+            if len(segs) >= 4 and segs[2] in ("tree", "blob"):
+                branch = segs[3]
+                rest = segs[4:]
+                if segs[2] == "blob" and rest:
+                    # .../blob/branch/path/to/SKILL.md → 目录为 path/to
+                    if rest[-1].lower() == "skill.md":
+                        rest = rest[:-1]
+                    subdir = "/".join(rest) if rest else None
+                elif rest:
+                    subdir = "/".join(rest)
+            base = {"clone_url": clone_url, "branch": branch, "subdir": subdir}
 
-    url = raw
-    if not re.match(r"^https?://", url, re.I):
-        url = "https://" + url.lstrip("/")
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    if host not in ("github.com", "www.github.com"):
-        return {"clone_url": raw.rstrip("/"), "branch": None, "subdir": None}
-
-    segs = [s for s in (parsed.path or "").strip("/").split("/") if s]
-    if len(segs) < 2:
-        raise SkillStoreError("GitHub 地址须含 owner/repo", status_code=400)
-    owner, repo = segs[0], segs[1]
-    if repo.endswith(".git"):
-        repo = repo[: -len(".git")]
-    clone_url = f"https://github.com/{owner}/{repo}.git"
-    branch: str | None = None
-    subdir: str | None = None
-    if len(segs) >= 4 and segs[2] in ("tree", "blob"):
-        branch = segs[3]
-        rest = segs[4:]
-        if segs[2] == "blob" and rest:
-            # .../blob/branch/path/to/SKILL.md → 目录为 path/to
-            if rest[-1].lower() == "skill.md":
-                rest = rest[:-1]
-            subdir = "/".join(rest) if rest else None
-        elif rest:
-            subdir = "/".join(rest)
-    return {"clone_url": clone_url, "branch": branch, "subdir": subdir}
+    base["skill_names"] = skill_names
+    return base
 
 
 def install_from_path(
@@ -411,7 +566,16 @@ def install_from_path(
     if (src_path / "SKILL.md").is_file():
         skill_src = src_path
     else:
-        skill_src = _resolve_skill_source_dir(src_path, subdir=None)
+        # 可能是单层包装目录；多 skill 仓库请走 _install_from_extracted
+        found = _discover_skill_dirs(src_path)
+        if len(found) == 1:
+            skill_src = found[0]
+        elif len(found) > 1:
+            return _install_skill_dirs(
+                found, name=None, overwrite=overwrite, root=root
+            )
+        else:
+            raise SkillStoreError("未找到含 SKILL.md 的目录", status_code=400)
     folder_name = validate_skill_name(name or skill_src.name)
     md = skill_src / "SKILL.md"
     if not md.is_file():
@@ -450,6 +614,139 @@ def _preferred_skill_name(skill_src: Path, name: str | None = None) -> str:
     return fm or folder
 
 
+def _filter_skill_dirs(
+    found: list[Path],
+    *,
+    skill_names: list[str] | None,
+) -> list[Path]:
+    """按 ``--skill`` 名称过滤发现的 skill 目录；未指定则全部安装。"""
+    if not found:
+        return []
+    if not skill_names:
+        return found
+
+    wanted: list[str] = []
+    seen_w: set[str] = set()
+    for s in skill_names:
+        w = (s or "").strip()
+        if not w or w in seen_w:
+            continue
+        seen_w.add(w)
+        wanted.append(w)
+
+    by_key: dict[str, Path] = {}
+    for p in found:
+        keys = {p.name}
+        md = p / "SKILL.md"
+        if md.is_file():
+            parsed = parse_skill_md(md)
+            fm = parsed.get("name")
+            if isinstance(fm, str) and fm.strip():
+                keys.add(fm.strip())
+        for k in keys:
+            by_key.setdefault(k, p)
+
+    selected: list[Path] = []
+    missing: list[str] = []
+    for w in wanted:
+        hit = by_key.get(w)
+        if hit is None:
+            missing.append(w)
+        elif hit not in selected:
+            selected.append(hit)
+    if missing:
+        available = sorted({p.name for p in found})[:30]
+        raise SkillStoreError(
+            f"未找到 skill: {', '.join(missing)}；可用: {', '.join(available)}"
+            + ("…" if len(found) > 30 else ""),
+            status_code=400,
+        )
+    return selected
+
+
+def _install_skill_dirs(
+    skill_dirs: list[Path],
+    *,
+    name: str | None = None,
+    overwrite: bool = False,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """安装一个或多个 skill 目录；多 skill 时返回汇总。"""
+    if not skill_dirs:
+        raise SkillStoreError("未找到含 SKILL.md 的目录", status_code=400)
+    if len(skill_dirs) == 1:
+        skill_src = skill_dirs[0]
+        eff_name = _preferred_skill_name(skill_src, name)
+        return install_from_path(
+            skill_src, name=eff_name, overwrite=overwrite, root=root
+        )
+
+    # 批量：忽略顶层 name（否则会强制所有 skill 同名）
+    installed: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for skill_src in skill_dirs:
+        try:
+            eff_name = _preferred_skill_name(skill_src, None)
+            meta = install_from_path(
+                skill_src, name=eff_name, overwrite=overwrite, root=root
+            )
+            installed.append(meta)
+        except SkillStoreError as e:
+            errors.append(f"{skill_src.name}: {e.message}")
+    if not installed:
+        raise SkillStoreError(
+            "批量安装全部失败: " + "; ".join(errors[:5]),
+            status_code=400,
+        )
+    names = [m["name"] for m in installed if m.get("name")]
+    result: dict[str, Any] = {
+        "name": names[0] if len(names) == 1 else f"{len(names)}-skills",
+        "valid": all(bool(m.get("valid")) for m in installed),
+        "count": len(installed),
+        "skills": installed,
+        "installed_names": names,
+    }
+    if errors:
+        result["partial_errors"] = errors
+    return result
+
+
+def _install_from_extracted(
+    extracted: Path,
+    *,
+    name: str | None = None,
+    subdir: str | None = None,
+    skill_names: list[str] | None = None,
+    overwrite: bool = False,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """从 clone/zip 根目录安装：支持单 skill 与 ``skills/*`` 多 skill 仓库。"""
+    search_root = extracted
+    if subdir:
+        sub = (subdir or "").strip().lstrip("/")
+        if ".." in Path(sub).parts:
+            raise SkillStoreError("subdir 非法", status_code=400)
+        candidate = (extracted / sub).resolve()
+        if not str(candidate).startswith(str(extracted.resolve())):
+            raise SkillStoreError("subdir 越界", status_code=400)
+        if not candidate.is_dir():
+            raise SkillStoreError(f"subdir 不存在: {subdir}", status_code=400)
+        # 指向单个 skill 目录
+        if (candidate / "SKILL.md").is_file():
+            return _install_skill_dirs(
+                [candidate], name=name, overwrite=overwrite, root=root
+            )
+        search_root = candidate
+
+    found = _discover_skill_dirs(search_root)
+    selected = _filter_skill_dirs(found, skill_names=skill_names)
+    # 仅单 skill 时允许显式 name 覆盖；多 skill 用各自 frontmatter
+    name_for_install = name if len(selected) == 1 else None
+    return _install_skill_dirs(
+        selected, name=name_for_install, overwrite=overwrite, root=root
+    )
+
+
 def install_from_git(
     ref: str,
     *,
@@ -480,6 +777,9 @@ def install_from_git(
         eff_subdir = eff_subdir.strip() or None
     else:
         eff_subdir = None
+    skill_names = parsed.get("skill_names")
+    if not isinstance(skill_names, list):
+        skill_names = None
     proxy_url = _normalize_http_proxy(proxy)
     timeout = _remote_timeout()
     env = os.environ.copy()
@@ -492,10 +792,11 @@ def install_from_git(
         env["all_proxy"] = proxy_url
     log = logging.getLogger("cursor_openai_bridge.skills")
     log.info(
-        "git clone start url=%s branch=%s subdir=%s proxy=%s timeout=%.0fs",
+        "git clone start url=%s branch=%s subdir=%s skills=%s proxy=%s timeout=%.0fs",
         url,
         eff_branch or "-",
         eff_subdir or "-",
+        ",".join(skill_names) if skill_names else "-",
         "yes" if proxy_url else "no",
         timeout,
     )
@@ -524,16 +825,20 @@ def install_from_git(
             err = (e.stderr or e.stdout or str(e))[:500]
             log.error("git clone failed url=%s err=%s", url, err)
             raise SkillStoreError(f"git clone 失败: {err}", status_code=400) from e
-        skill_src = _resolve_skill_source_dir(clone_dir, subdir=eff_subdir)
-        eff_name = _preferred_skill_name(skill_src, name)
+        result = _install_from_extracted(
+            clone_dir,
+            name=name,
+            subdir=eff_subdir,
+            skill_names=skill_names,
+            overwrite=overwrite,
+            root=root,
+        )
         log.info(
-            "git clone ok src=%s name=%s",
-            skill_src.name,
-            eff_name,
+            "git clone ok count=%s names=%s",
+            result.get("count") or 1,
+            result.get("installed_names") or result.get("name"),
         )
-        return install_from_path(
-            skill_src, name=eff_name, overwrite=overwrite, root=root
-        )
+        return result
 
 
 def _normalize_http_proxy(proxy: str | None) -> str | None:
@@ -632,10 +937,13 @@ def install_from_zip_bytes(
                 zf.extractall(extract_dir)
         except zipfile.BadZipFile as e:
             raise SkillStoreError("不是有效 zip", status_code=400) from e
-        skill_src = _resolve_skill_source_dir(extract_dir, subdir=subdir)
-        eff_name = _preferred_skill_name(skill_src, name)
-        return install_from_path(
-            skill_src, name=eff_name, overwrite=overwrite, root=root
+        return _install_from_extracted(
+            extract_dir,
+            name=name,
+            subdir=subdir,
+            skill_names=None,
+            overwrite=overwrite,
+            root=root,
         )
 
 
