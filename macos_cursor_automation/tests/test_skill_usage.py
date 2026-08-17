@@ -53,6 +53,18 @@ class SkillUsageTests(unittest.TestCase):
         self.assertIn("skill_usage=requested", line)
         self.assertIn("hv-analysis", line)
 
+    def test_image_skill_trigger_line_is_requested(self) -> None:
+        prompt = (
+            "Task: generate exactly ONE raster image file (PNG)\n\n"
+            "Creative brief:\n"
+            "【最高优先级 · Cursor 生图 Skills】本张图必须启用下列 Skill：\n"
+            "/ip-diagram-creator\n\n"
+            "画一张知识卡"
+        )
+        u = infer_skill_usage(prompt, installed_names=["ip-diagram-creator"])
+        self.assertEqual(u.requested, ["ip-diagram-creator"])
+        self.assertEqual(u.label, "requested")
+
 
 if __name__ == "__main__":
     unittest.main()

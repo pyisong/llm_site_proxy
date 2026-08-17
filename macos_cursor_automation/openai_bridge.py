@@ -1798,6 +1798,13 @@ def create_app(
                     model=agent_model,
                     subprocess_progress=True,
                 )
+                _log_skill_usage_for_request(
+                    req_id,
+                    agent_prompt,
+                    agent_stdout=r.stdout or "",
+                    agent_stderr=r.stderr or "",
+                    parsed=getattr(r, "parsed", None),
+                )
                 if r.returncode != 0:
                     msg = (r.stderr or r.stdout or "agent 失败").strip()
                     raise RuntimeError(msg[:8000])
@@ -1881,6 +1888,13 @@ def create_app(
                 force=True,
                 timeout=agent_timeout,
                 model=agent_model,
+            )
+            _log_skill_usage_for_request(
+                req_id,
+                agent_prompt,
+                agent_stdout=r.stdout or "",
+                agent_stderr=r.stderr or "",
+                parsed=getattr(r, "parsed", None),
             )
             if r.returncode != 0:
                 msg = (r.stderr or r.stdout or "agent 失败").strip()
@@ -2143,6 +2157,13 @@ def create_app(
                     model=agent_model,
                     subprocess_progress=True,
                 )
+                _log_skill_usage_for_request(
+                    req_id,
+                    agent_prompt,
+                    agent_stdout=r.stdout or "",
+                    agent_stderr=r.stderr or "",
+                    parsed=getattr(r, "parsed", None),
+                )
                 if r.returncode != 0:
                     msg = (r.stderr or r.stdout or "agent 失败").strip()
                     raise RuntimeError(msg[:8000])
@@ -2204,6 +2225,13 @@ def create_app(
                 force=True,
                 timeout=agent_timeout,
                 model=agent_model,
+            )
+            _log_skill_usage_for_request(
+                req_id,
+                agent_prompt,
+                agent_stdout=r.stdout or "",
+                agent_stderr=r.stderr or "",
+                parsed=getattr(r, "parsed", None),
             )
             if r.returncode != 0:
                 msg = (r.stderr or r.stdout or "agent 失败").strip()

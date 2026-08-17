@@ -1,6 +1,7 @@
 .git
 .gitignore
 __pycache__
+**/__pycache__
 *.py[cod]
 .pytest_cache
 .mypy_cache
@@ -9,9 +10,13 @@ __pycache__
 .env.*
 !.env.example
 *.md
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml
 client.py
-test
+tests
 applescript
 open_in_cursor.sh
-docker-compose.override.yml
+logs
+outputs
 .cursor_bridge_generated

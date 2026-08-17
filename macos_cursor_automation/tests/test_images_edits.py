@@ -81,3 +81,46 @@ async def test_images_edits_route_registered():
     app = create_app(default_workspace=Path("."), agent_mode="ask", agent_timeout=60.0)
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/v1/images/edits" in paths
+
+
+def test_images_generations_logs_slash_skill_usage(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    logged: list[tuple[str, str]] = []
+
+    def fake_log(req_id: str, prompt: str, **_kwargs) -> None:
+        logged.append((req_id, prompt))
+
+    class FakeAgent:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+        parsed = None
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+    monkeypatch.setattr("openai_bridge._log_skill_usage_for_request", fake_log)
+    monkeypatch.setattr("openai_bridge.resolve_cursor_cli", lambda: True)
+    monkeypatch.setattr("openai_bridge.run_cursor_agent", lambda *_a, **_k: FakeAgent())
+    monkeypatch.setattr(
+        "openai_bridge._bytes_from_expected_or_reply",
+        lambda **_k: png,
+    )
+
+    app = create_app(default_workspace=tmp_path, agent_mode="ask", agent_timeout=30.0)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/images/generations",
+        json={
+            "prompt": (
+                "【最高优先级 · Cursor 生图 Skills】本张图必须启用下列 Skill：\n"
+                "/ip-diagram-creator\n\n"
+                "画一张知识卡"
+            ),
+            "n": 1,
+            "response_format": "b64_json",
+            "metadata": {"image_engine": "agent_interactive"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert logged, "images/generations must record skill usage"
+    assert any("/ip-diagram-creator" in prompt for _req_id, prompt in logged)

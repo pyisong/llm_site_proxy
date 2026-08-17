@@ -129,6 +129,106 @@ def parse_json_bytes(body: bytes | None) -> Any:
         return None
 
 
+def _header_param(header: str, name: str) -> str | None:
+    target = name.lower() + "="
+    for part in header.split(";"):
+        item = part.strip()
+        if item.lower().startswith(target):
+            return item.split("=", 1)[1].strip().strip('"')
+    return None
+
+
+def _split_multipart_headers(part: bytes) -> tuple[dict[str, str], bytes]:
+    sep = b"\r\n\r\n"
+    idx = part.find(sep)
+    if idx < 0:
+        sep = b"\n\n"
+        idx = part.find(sep)
+        if idx < 0:
+            return {}, part
+    header_blob = part[:idx].decode("utf-8", errors="replace")
+    payload = part[idx + len(sep) :]
+    headers: dict[str, str] = {}
+    for line in header_blob.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        headers[key.strip().lower()] = value.strip()
+    return headers, payload
+
+
+def parse_multipart_form(body: bytes | None, content_type: str) -> dict[str, Any] | None:
+    """把 multipart 表单收成可落库的 dict；文件只保留 filename / content_type / bytes。"""
+    if not body:
+        return None
+    boundary = _header_param(content_type or "", "boundary")
+    if not boundary:
+        return None
+    delim = b"--" + boundary.encode("utf-8", errors="replace")
+    out: dict[str, Any] = {}
+    for raw_part in body.split(delim):
+        part = raw_part
+        if part.startswith(b"\r\n"):
+            part = part[2:]
+        elif part.startswith(b"\n"):
+            part = part[1:]
+        if not part or part == b"--" or part.startswith(b"--"):
+            continue
+        if part.endswith(b"\r\n"):
+            part = part[:-2]
+        elif part.endswith(b"\n"):
+            part = part[:-1]
+        headers, payload = _split_multipart_headers(part)
+        disp = headers.get("content-disposition") or ""
+        name = _header_param(disp, "name")
+        if not name:
+            continue
+        filename = _header_param(disp, "filename")
+        if filename is not None:
+            out[name] = {
+                "filename": filename,
+                "content_type": headers.get("content-type") or "application/octet-stream",
+                "bytes": len(payload),
+            }
+            continue
+        text = payload.decode("utf-8", errors="replace")
+        if name == "metadata":
+            try:
+                parsed_meta = json.loads(text)
+            except json.JSONDecodeError:
+                parsed_meta = None
+            if parsed_meta is not None:
+                out[name] = parsed_meta
+                continue
+        out[name] = text
+    return out or None
+
+
+def parse_request_obj(body: bytes | None, content_type: str = "") -> Any:
+    """JSON 原样解析；multipart（如 images/edits）抽出文本字段 + 上传文件摘要。"""
+    if not body:
+        return None
+    parsed = parse_json_bytes(body)
+    if parsed is not None:
+        return parsed
+    if "multipart/form-data" in (content_type or "").lower():
+        form = parse_multipart_form(body, content_type)
+        if form is not None:
+            return form
+    return {
+        "_raw": True,
+        "content_type": content_type or None,
+        "bytes": len(body),
+    }
+
+
+def extract_model_from_request(request_obj: Any) -> str | None:
+    if not isinstance(request_obj, dict):
+        return None
+    model = request_obj.get("model")
+    return model.strip() if isinstance(model, str) and model.strip() else None
+
+
 def _redact_string(value: str, *, key: str = "") -> str:
     k = (key or "").lower()
     if k in {"image", "audio", "data", "file", "b64_json", "audiobase64"} or (
@@ -413,9 +513,10 @@ def install_console_ingest_middleware(app: Any, *, proxy_id: str | None = None) 
         request_obj: Any = None
         model: str | None = None
         try:
+            req_ct = str(request.headers.get("content-type") or "")
             raw = await request.body()
-            request_obj = parse_json_bytes(raw)
-            model = extract_model_from_body(raw)
+            request_obj = parse_request_obj(raw, req_ct)
+            model = extract_model_from_request(request_obj) or extract_model_from_body(raw)
         except Exception:  # noqa: BLE001
             request_obj = None
             model = None

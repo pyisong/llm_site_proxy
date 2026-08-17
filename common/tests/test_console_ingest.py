@@ -20,8 +20,10 @@ sys.path.insert(0, str(ROOT))
 from console_ingest import (  # noqa: E402
     build_io_meta,
     extract_model_from_body,
+    extract_model_from_request,
     extract_response_text,
     infer_mode,
+    parse_request_obj,
     sanitize_for_ingest,
     schedule_request_ingest,
     should_ingest,
@@ -34,6 +36,7 @@ from console_ingest import (  # noqa: E402
         ("POST", "/v1/chat/completions", True),
         ("POST", "/v1/messages", True),
         ("POST", "/v1/images/generations", True),
+        ("POST", "/v1/images/edits", True),
         ("POST", "/v1/videos/generations", True),
         ("POST", "/tts", True),
         ("POST", "/v1/metaso/search", True),
@@ -55,6 +58,7 @@ def test_should_ingest(method: str, path: str, expected: bool) -> None:
         ("/v1/chat/completions", "chat"),
         ("/v1/messages", "chat"),
         ("/v1/images/generations", "image"),
+        ("/v1/images/edits", "image"),
         ("/v1/videos/generations", "video"),
         ("/tts", "tts"),
         ("/v1/tts", "tts"),
@@ -71,6 +75,69 @@ def test_extract_model_from_body() -> None:
     assert extract_model_from_body(b'{"model":"gpt-x","messages":[]}') == "gpt-x"
     assert extract_model_from_body(b"not-json") is None
     assert extract_model_from_body(None) is None
+
+
+def _multipart_body(
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]] | None = None,
+) -> tuple[bytes, str]:
+    boundary = "----TestBoundary7MA4YWxkTrZu0gW"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+    for name, (filename, data, ctype) in (files or {}).items():
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                f"Content-Type: {ctype}\r\n\r\n"
+            ).encode("utf-8")
+            + data
+            + b"\r\n"
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def test_parse_request_obj_keeps_json() -> None:
+    body = b'{"prompt":"a cat","model":"cursor-agent"}'
+    assert parse_request_obj(body, "application/json") == {
+        "prompt": "a cat",
+        "model": "cursor-agent",
+    }
+
+
+def test_parse_request_obj_multipart_image_edits() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    raw, content_type = _multipart_body(
+        {
+            "prompt": "把背景换成夜晚",
+            "model": "cursor-agent",
+            "n": "1",
+            "size": "1024x1024",
+            "response_format": "b64_json",
+            "metadata": '{"image_engine":"agent_interactive"}',
+        },
+        {"image": ("ref.png", png, "image/png")},
+    )
+    parsed = parse_request_obj(raw, content_type)
+    assert parsed["prompt"] == "把背景换成夜晚"
+    assert parsed["model"] == "cursor-agent"
+    assert parsed["size"] == "1024x1024"
+    assert parsed["metadata"] == {"image_engine": "agent_interactive"}
+    assert parsed["image"]["filename"] == "ref.png"
+    assert parsed["image"]["content_type"] == "image/png"
+    assert parsed["image"]["bytes"] == len(png)
+    assert extract_model_from_request(parsed) == "cursor-agent"
+    meta = build_io_meta(request_obj=parsed)
+    assert meta["request"]["prompt"] == "把背景换成夜晚"
+    assert meta["request"]["image"]["filename"] == "ref.png"
 
 
 def test_sanitize_and_build_io_meta() -> None:

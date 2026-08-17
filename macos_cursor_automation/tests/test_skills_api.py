@@ -67,6 +67,19 @@ class SkillsApiTests(unittest.TestCase):
             # 既有健康检查不受影响
             self.assertIn(client.get("/health").status_code, (200,))
 
+    def test_dockerfile_copies_app_directory(self) -> None:
+        """整目录 COPY，避免新增 .py 时漏进镜像导致 serve 崩溃。"""
+        root = Path(__file__).resolve().parents[1]
+        dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+        dockerignore = (root / ".dockerignore").read_text(encoding="utf-8")
+        self.assertRegex(
+            dockerfile,
+            r"(?m)^COPY \. \.\s*$",
+            "Dockerfile should COPY . . so new modules ship automatically",
+        )
+        self.assertIn("tests", dockerignore)
+        self.assertIn(".env", dockerignore)
+
 
 if __name__ == "__main__":
     unittest.main()
