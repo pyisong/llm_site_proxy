@@ -69,6 +69,13 @@ _DEFAULT_CATEGORIES: tuple[dict[str, Any], ...] = (
         "purposes": ["text"],
     },
     {
+        "id": "motion",
+        "label": "成片运动",
+        "hint": "Remotion 镜头节奏、转场与成片结构；与生文/生图叠加",
+        "accent": "#c45c4a",
+        "purposes": ["motion"],
+    },
+    {
         "id": "other",
         "label": "其它",
         "hint": "尚未归类",
@@ -100,6 +107,9 @@ _TYPE_ALIASES: dict[str, str] = {
     "backend": "generation",
     "platform": "platform",
     "ops": "platform",
+    "motion": "motion",
+    "remotion": "motion",
+    "video": "motion",
     "other": "other",
 }
 
@@ -128,6 +138,17 @@ _DEFAULT_BY_NAME: dict[str, str] = {
     "baoyu-electron-extract": "utility",
     "huashu-nuwa": "utility",
     "darwin-skill": "platform",
+    "booktok-remotion": "motion",
+    "remotion-best-practices": "motion",
+    "remotion-markup": "motion",
+    "remotion-render": "motion",
+    "remotion-captions": "motion",
+    "remotion-multimedia": "motion",
+    "remotion-maps": "motion",
+    "remotion-interactivity": "motion",
+    "remotion-studio": "motion",
+    "remotion-docs": "motion",
+    "remotion-create": "motion",
 }
 
 _CAT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -299,7 +320,10 @@ def categorize_skill(
 
     # 3) 命名约定
     if cid is None:
-        if n.endswith("-perspective") or "-perspective" in n:
+        if n.startswith("remotion-") or n == "booktok-remotion":
+            cid = "motion" if "motion" in known else None
+            source = "rule:remotion"
+        elif n.endswith("-perspective") or "-perspective" in n:
             cid = "perspective" if "perspective" in known else None
             source = "rule:perspective-suffix"
         elif n.startswith("baoyu-post-to-"):

@@ -26,8 +26,8 @@ export default function App() {
               <div className="text-sm font-semibold tracking-tight truncate">
                 Proxy Console
               </div>
-              <div className="text-[11px] text-muted font-mono truncate">
-                llm_site_proxy ops
+              <div className="text-[11px] text-muted truncate">
+                运营控制台
               </div>
             </div>
           </div>

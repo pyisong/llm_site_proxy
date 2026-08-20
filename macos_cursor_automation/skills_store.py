@@ -154,7 +154,78 @@ def parse_skill_md(path: Path) -> dict[str, Any]:
     return out
 
 
-def _skill_meta(skill_dir: Path, *, include_body: bool = False) -> dict[str, Any]:
+_ASSET_EXTS = {".md", ".txt"}
+_MAX_SKILL_ASSETS = 40
+_MAX_SKILL_ASSET_BYTES = 200_000
+_MAX_SKILL_ASSETS_TOTAL_BYTES = 1_500_000
+
+
+def _asset_sort_key(rel: str) -> tuple[int, str]:
+    lower = rel.lower().replace("\\", "/")
+    if "/styles/" in f"/{lower}" and not lower.endswith("_template.md"):
+        return (0, lower)
+    if "prompt-template" in lower:
+        return (1, lower)
+    if any(token in lower for token in ("composition", "shot-config", "visual-promise")):
+        return (2, lower)
+    if lower.startswith("references/"):
+        return (3, lower)
+    return (4, lower)
+
+
+def list_skill_text_assets(skill_dir: Path) -> list[dict[str, str]]:
+    """读取 skill 目录下 references/、docs/ 的文本附件（不含 SKILL.md / _template）。"""
+    found: list[Path] = []
+    for sub in ("references", "docs"):
+        root = skill_dir / sub
+        if not root.is_dir():
+            continue
+        found.extend(p for p in root.rglob("*") if p.is_file())
+
+    ranked: list[tuple[tuple[int, str], Path, str]] = []
+    for path in found:
+        if path.suffix.lower() not in _ASSET_EXTS:
+            continue
+        try:
+            rel = path.relative_to(skill_dir).as_posix()
+        except ValueError:
+            continue
+        if "{" in rel or "}" in rel:
+            continue
+        if path.name.lower() == "_template.md" or path.name.lower() == "skill.md":
+            continue
+        ranked.append((_asset_sort_key(rel), path, rel))
+    ranked.sort(key=lambda row: row[0])
+
+    assets: list[dict[str, str]] = []
+    total = 0
+    for _, path, rel in ranked:
+        if len(assets) >= _MAX_SKILL_ASSETS:
+            break
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > _MAX_SKILL_ASSET_BYTES or total + size > _MAX_SKILL_ASSETS_TOTAL_BYTES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        body = text.strip()
+        if not body:
+            continue
+        assets.append({"path": rel, "content": body})
+        total += len(body.encode("utf-8"))
+    return assets
+
+
+def _skill_meta(
+    skill_dir: Path,
+    *,
+    include_body: bool = False,
+    include_assets: bool = False,
+) -> dict[str, Any]:
     md = skill_dir / "SKILL.md"
     parsed = (
         parse_skill_md(md)
@@ -181,7 +252,10 @@ def _skill_meta(skill_dir: Path, *, include_body: bool = False) -> dict[str, Any
         from skill_taxonomy import enrich_skill_item
     except ImportError:
         from .skill_taxonomy import enrich_skill_item  # type: ignore
-    return enrich_skill_item(item, frontmatter=parsed)
+    item = enrich_skill_item(item, frontmatter=parsed)
+    if include_assets:
+        item["assets"] = list_skill_text_assets(skill_dir)
+    return item
 
 
 def list_skills(root: Path | None = None) -> list[dict[str, Any]]:
@@ -229,13 +303,18 @@ def get_skill(
     name: str,
     *,
     include_body: bool = False,
+    include_assets: bool = False,
     root: Path | None = None,
 ) -> dict[str, Any] | None:
     n = validate_skill_name(name)
     skill_dir = skills_root(root) / n
     if not skill_dir.is_dir():
         return None
-    return _skill_meta(skill_dir, include_body=include_body)
+    return _skill_meta(
+        skill_dir,
+        include_body=include_body,
+        include_assets=include_assets,
+    )
 
 
 def _ensure_skill_dir_valid(skill_dir: Path, *, expected_name: str) -> None:

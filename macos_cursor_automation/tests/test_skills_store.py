@@ -13,6 +13,7 @@ from skills_store import (
     SkillStoreError,
     delete_skill,
     generate_skill,
+    get_skill,
     install,
     install_from_path,
     list_skills,
@@ -337,6 +338,38 @@ class SkillsStoreTests(unittest.TestCase):
             )
             self.assertEqual(meta["name"], "gen-skill")
             self.assertTrue((root / "gen-skill" / "SKILL.md").is_file())
+
+    def test_get_skill_include_assets_returns_style_refs(self) -> None:
+        """生图画风写在 references/styles，GET skill 必须带回附件，不能只给 SKILL.md。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "skills"
+            skill = _write_skill(root, "gimi-illustration")
+            styles = skill / "references" / "styles"
+            styles.mkdir(parents=True)
+            (styles / "quirky-sketch.md").write_text(
+                "## Prompt 风格段（填入 `{STYLE_DNA}`）\n\n"
+                "```\nquirky hand-drawn illustration, wobbly ink lines\n```\n",
+                encoding="utf-8",
+            )
+            (styles / "_template.md").write_text("# skip\n", encoding="utf-8")
+            item = get_skill(
+                "gimi-illustration",
+                include_body=True,
+                include_assets=True,
+                root=root,
+            )
+            self.assertIsNotNone(item)
+            self.assertIn("body", item)
+            assets = item.get("assets") or []
+            paths = [str(a.get("path") or "") for a in assets]
+            self.assertIn("references/styles/quirky-sketch.md", paths)
+            self.assertNotIn("references/styles/_template.md", paths)
+            dna = next(
+                str(a.get("content") or "")
+                for a in assets
+                if a.get("path") == "references/styles/quirky-sketch.md"
+            )
+            self.assertIn("quirky hand-drawn", dna)
 
 
 if __name__ == "__main__":

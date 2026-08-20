@@ -400,6 +400,11 @@ def api_skills_usage(name: str, limit: int = Query(50, ge=1, le=200)) -> dict[st
     return {"items": db.skill_usage_detail(name, limit)}
 
 
+@app.get("/api/skills-usage")
+def api_skills_usage_recent(limit: int = Query(40, ge=1, le=200)) -> dict[str, Any]:
+    return {"items": db.skill_usage_recent(limit)}
+
+
 @app.get("/api/skills-tags")
 async def api_skills_tags() -> Any:
     status, payload = await skills_proxy.list_tags()

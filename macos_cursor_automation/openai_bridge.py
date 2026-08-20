@@ -1427,9 +1427,13 @@ def create_app(
             return _skills_http_error(e)
 
     @app.get("/v1/skills/{name}")
-    async def skills_get(name: str, include_body: int = 0):
+    async def skills_get(name: str, include_body: int = 0, include_assets: int = 0):
         try:
-            item = get_skill(name, include_body=bool(include_body))
+            item = get_skill(
+                name,
+                include_body=bool(include_body),
+                include_assets=bool(include_assets),
+            )
         except SkillStoreError as e:
             return _skills_http_error(e)
         if item is None:

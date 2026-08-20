@@ -51,10 +51,12 @@ macos_cursor_automation/outputs/
 macos_cursor_automation/test/
 .DS_Store
 
-# Global Cursor skills store (persist locally; keep README + .gitkeep)
+# Global Cursor skills store (persist locally; keep README + .gitkeep + factory builtins)
 cursor_skills/*
 !cursor_skills/.gitkeep
 !cursor_skills/README.md
+!cursor_skills/booktok-remotion/
+!cursor_skills/booktok-remotion/**
 
 # Editors / misc
 .idea/

@@ -663,6 +663,16 @@ def skill_usage_detail(name: str, limit: int = 50) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def skill_usage_recent(limit: int = 40) -> list[dict[str, Any]]:
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT * FROM skill_usage_events
+               ORDER BY created_at DESC LIMIT %s""",
+            (max(1, min(200, limit)),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def ingest_skill_usage(payload: dict[str, Any]) -> dict[str, Any]:
     rid = str(uuid.uuid4())
     with db() as conn:

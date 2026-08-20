@@ -53,9 +53,9 @@ function isTtsProxy(proxyId: string): boolean {
 
 function probeProgressHint(proxyId: string): string {
   if (isTtsProxy(proxyId)) {
-    return "发送文本「hi」到 /tts（JSON）。请勿关闭页面。";
+    return "正在探测语音服务，请勿关闭页面。";
   }
-  return "发送聊天内容「hi」到 /v1/chat/completions。请勿关闭页面。";
+  return "正在探测聊天服务，请勿关闭页面。";
 }
 
 export default function ConnectivityPage() {
@@ -194,7 +194,7 @@ export default function ConnectivityPage() {
     <div>
       <PageHeader
         title="Connectivity"
-        subtitle="点击探测会发真实请求（聊天走 /v1/chat/completions，Azure TTS 走 /tts，内容默认 hi）。browser proxy 可能需要几十秒到数分钟。"
+        subtitle="对所选服务发一次真实探测。聊天可能需要较长时间。"
         action={
           <div className="flex items-center gap-2">
             <GhostButton disabled={busy !== null} onClick={() => void load()}>
@@ -372,7 +372,7 @@ export default function ConnectivityPage() {
         <Panel className="overflow-hidden">
           {recentProbes.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm text-muted">
-              暂无探测记录。点击「探测」后会在这里显示实际请求。
+              暂无探测记录。
             </div>
           ) : (
             <ul className="divide-y divide-line max-h-[320px] overflow-y-auto">
@@ -429,7 +429,7 @@ export default function ConnectivityPage() {
                 <p className="mt-3 text-sm text-muted">
                   {a.keepalive
                     ? "若 2 天内无业务请求，后台会自动发一次聊天保活。"
-                    : "Cursor Bridge 不参与自动保活。"}
+                    : "该服务不参与自动保活。"}
                 </p>
               )}
               <div className="mt-3 flex flex-wrap gap-3 font-mono text-[11px] text-muted">
@@ -445,8 +445,7 @@ export default function ConnectivityPage() {
                         需要刷新登录态
                       </div>
                       <p className="mt-2 text-[13px] text-muted leading-relaxed">
-                        可在下方打开站点登录页，登录后点「保存登录态」自动写回
-                        secrets/*_storage.json。
+                        登录后点「保存登录态」即可写回。
                       </p>
                     </div>
                   ) : null}
@@ -476,7 +475,7 @@ export default function ConnectivityPage() {
                     需要刷新登录态
                   </div>
                   <p className="mt-2 text-[13px] text-muted leading-relaxed">
-                    在对应 proxy 目录重新运行 save_storage_state 后确认。
+                    请在对应服务上刷新登录态后确认。
                   </p>
                   <div className="mt-3">
                     <PrimaryButton

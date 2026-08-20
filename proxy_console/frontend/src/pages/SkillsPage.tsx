@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ArrowClockwise,
+  CaretDown,
   CircleNotch,
   DownloadSimple,
   FileZip,
@@ -8,6 +10,7 @@ import {
   FolderSimple,
   MagnifyingGlass,
   Prohibit,
+  Tag,
   Trash,
 } from "@phosphor-icons/react";
 import { api, fmtTime, skillBlurb, skillDescriptionFull, type SkillCategory, type SkillItem, type SkillTag } from "../api";
@@ -51,7 +54,7 @@ function installModeLabel(mode: InstallMode): string {
 
 function installModeHint(mode: InstallMode): string {
   if (mode === "github") {
-    return "后台异步 git clone，当前网络较慢时可能需要 10–20 分钟。请勿关闭页面。";
+    return "后台克隆仓库，网络较慢时可能需要较长时间。请勿关闭页面。";
   }
   if (mode === "zip") {
     return "上传并解压 zip，校验 SKILL.md。请勿关闭页面。";
@@ -59,11 +62,12 @@ function installModeHint(mode: InstallMode): string {
   return "复制并校验 skill 目录。请勿关闭页面。";
 }
 export default function SkillsPage() {
+  const [searchParams] = useSearchParams();
+  const skillFromUrl = searchParams.get("skill");
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [categories, setCategories] = useState<SkillCategory[]>([]);
   const [tagCatalog, setTagCatalog] = useState<SkillTag[]>([]);
-  const [source, setSource] = useState<string | undefined>();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(skillFromUrl);
   const [usage, setUsage] = useState<
     {
       id: string;
@@ -101,6 +105,13 @@ export default function SkillsPage() {
   const [newTagId, setNewTagId] = useState("");
   const [newTagLabel, setNewTagLabel] = useState("");
   const [newTagColor, setNewTagColor] = useState("#2bb8c8");
+  const [tagLibOpen, setTagLibOpen] = useState(() => {
+    try {
+      return localStorage.getItem("proxy_console_taglib_open") === "1";
+    } catch {
+      return false;
+    }
+  });
 
   const load = useCallback(async () => {
     setError(null);
@@ -109,19 +120,27 @@ export default function SkillsPage() {
       setSkills(res.skills);
       setCategories(Array.isArray(res.categories) ? res.categories : []);
       setTagCatalog(Array.isArray(res.tags) ? res.tags : []);
-      setSource(res.source);
-      if (res.error) setError(`Bridge: ${res.error} (已用本地回退或空列表)`);
-      setSelected((prev) => prev ?? res.skills[0]?.name ?? null);
+      if (res.error) setError(res.error);
+      setSelected((prev) => {
+        if (skillFromUrl && res.skills.some((s) => s.name === skillFromUrl)) {
+          return skillFromUrl;
+        }
+        return prev ?? res.skills[0]?.name ?? null;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [skillFromUrl]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (skillFromUrl) setSelected(skillFromUrl);
+  }, [skillFromUrl]);
 
   useEffect(() => {
     if (!selected) return;
@@ -438,7 +457,7 @@ export default function SkillsPage() {
     <div>
       <PageHeader
         title="Skills"
-        subtitle="Cursor Bridge 全局 Skills：安装、禁用、删除与使用记录。"
+        subtitle="安装、禁用与使用记录。"
         action={
           <GhostButton onClick={() => void load()}>
             <ArrowClockwise size={16} />
@@ -503,10 +522,9 @@ export default function SkillsPage() {
                   <div>
                     <h2 className="text-sm font-medium">已安装</h2>
                     <p className="mt-0.5 text-[11px] text-muted">
-                      按用途分组 · 共 {skills.length}
-                      {source ? ` · ${source}` : ""}
+                      共 {skills.length}
                       {filteredSkills.length !== skills.length
-                        ? ` · 筛选后 ${filteredSkills.length}`
+                        ? `，筛选 ${filteredSkills.length}`
                         : ""}
                     </p>
                   </div>
@@ -630,7 +648,7 @@ export default function SkillsPage() {
               {skills.length === 0 ? (
                 <EmptyState
                   title="没有 Skills"
-                  body="安装一个 skill，或确认 Cursor Bridge 可达。"
+                  body="安装一个 skill，或确认服务可用。"
                 />
               ) : filteredSkills.length === 0 ? (
                 <EmptyState
@@ -916,14 +934,48 @@ export default function SkillsPage() {
 
       <Reveal className="mb-4">
         <Panel className="overflow-hidden">
-          <div className="border-b border-line px-4 py-3">
-            <h2 className="text-sm font-medium">标签库</h2>
-            <p className="mt-0.5 text-[11px] text-muted">
-              在此新增/删除标签；右侧详情可为每个 skill 勾选标签。数据持久化在 bridge
-              skills 目录的 .skills-meta.json。
-            </p>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setTagLibOpen((open) => {
+                const next = !open;
+                try {
+                  localStorage.setItem(
+                    "proxy_console_taglib_open",
+                    next ? "1" : "0",
+                  );
+                } catch {
+                  /* ignore */
+                }
+                return next;
+              });
+            }}
+            className={[
+              "flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-panel-2/60",
+              tagLibOpen ? "border-b border-line" : "",
+            ].join(" ")}
+            aria-expanded={tagLibOpen}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <Tag size={14} className="shrink-0 text-muted" />
+              <span className="text-sm font-medium">标签库</span>
+              <span className="font-mono text-[11px] text-muted">
+                {tagCatalog.length}
+              </span>
+            </span>
+            <CaretDown
+              size={14}
+              className={[
+                "shrink-0 text-muted transition",
+                tagLibOpen ? "rotate-180" : "",
+              ].join(" ")}
+            />
+          </button>
+          {tagLibOpen ? (
           <div className="space-y-3 p-4">
+            <p className="text-[11px] text-muted">
+              新增或删除后，可在右侧给 skill 勾选。
+            </p>
             <form
               onSubmit={onCreateTag}
               className="flex flex-col gap-2 sm:flex-row sm:items-end"
@@ -1000,6 +1052,7 @@ export default function SkillsPage() {
               </ul>
             )}
           </div>
+          ) : null}
         </Panel>
       </Reveal>
 
@@ -1116,7 +1169,7 @@ export default function SkillsPage() {
                     <input
                       value={installProxy}
                       onChange={(e) => setInstallProxy(e.target.value)}
-                      placeholder="http://10.1.1.109:7890（可选，仅本次 git clone）"
+                      placeholder="http://host:port（可选）"
                       disabled={Boolean(installProgress)}
                       className="min-w-0 flex-1 rounded-md border border-line bg-canvas px-2.5 py-1.5 font-mono text-[13px] text-ink placeholder:text-muted/70 outline-none focus:border-accent disabled:opacity-60"
                       autoComplete="off"
@@ -1155,10 +1208,10 @@ export default function SkillsPage() {
 
             <p className="text-[11px] leading-relaxed text-muted">
               {installMode === "zip"
-                ? "本机下载 zip 后上传（推荐绕过服务器访问 GitHub 超时）。支持单 skill 目录或 GitHub Code → Download ZIP。"
+                ? "上传含 SKILL.md 的 zip，或 GitHub 下载的源码包。"
                 : installMode === "github"
-                  ? "可粘贴完整 npx skills add owner/repo [-a cursor] [--skill name]、owner/repo 短名，或 GitHub URL（含 /tree/<branch>/<subdir>）。多 skill 仓库（如 jimliu/baoyu-skills）会批量安装 skills/*；可用 --skill 只装指定项。临时代理仅作用于本次 git clone。"
-                  : "填写 Bridge 容器内可读路径，对应 POST /v1/skills/install（source=path）。"}
+                  ? "支持 owner/repo、GitHub 链接，或 npx skills add …。多 skill 仓库会批量安装。"
+                  : "填写服务端可读的 skill 目录路径。"}
             </p>
           </form>
         </Panel>

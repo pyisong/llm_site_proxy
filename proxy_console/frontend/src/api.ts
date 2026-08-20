@@ -164,6 +164,14 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+export type SkillUsageEvent = {
+  id: string;
+  skill_name: string;
+  label: string;
+  request_id: string | null;
+  created_at: number;
+};
+
 export const api = {
   overview: (windowSec = 3600) =>
     json<Overview>(`/api/overview?window_sec=${windowSec}`),
@@ -347,14 +355,10 @@ export const api = {
     json(`/api/skills/${encodeURIComponent(name)}/enable`, { method: "POST" }),
   skillUsage: (name: string) =>
     json<{
-      items: {
-        id: string;
-        skill_name: string;
-        label: string;
-        request_id: string | null;
-        created_at: number;
-      }[];
+      items: SkillUsageEvent[];
     }>(`/api/skills/${encodeURIComponent(name)}/usage`),
+  skillUsageRecent: (limit = 40) =>
+    json<{ items: SkillUsageEvent[] }>(`/api/skills-usage?limit=${limit}`),
 };
 
 export function fmtTime(ts: number | null | undefined): string {

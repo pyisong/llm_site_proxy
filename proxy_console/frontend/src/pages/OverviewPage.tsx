@@ -7,7 +7,14 @@ import {
   fmtTime,
   type Overview,
   type RequestEvent,
+  type SkillCategory,
+  type SkillItem,
+  type SkillUsageEvent,
 } from "../api";
+import {
+  SkillsShowcase,
+  SkillsShowcaseSkeleton,
+} from "../components/SkillsShowcase";
 import {
   EmptyState,
   ErrorBanner,
@@ -59,6 +66,10 @@ export default function OverviewPage() {
   const [windowSec, setWindowSec] = useState(readStoredWindowSec);
   const [data, setData] = useState<Overview | null>(null);
   const [requests, setRequests] = useState<RequestEvent[]>([]);
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [skillCategories, setSkillCategories] = useState<SkillCategory[]>([]);
+  const [skillRecent, setSkillRecent] = useState<SkillUsageEvent[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<RequestEvent | null>(null);
@@ -66,16 +77,27 @@ export default function OverviewPage() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [ov, req] = await Promise.all([
+      const [ov, req, sk, recent] = await Promise.all([
         api.overview(windowSec),
         api.requests(40),
+        api.skills().catch(() => null),
+        api.skillUsageRecent(32).catch(() => ({ items: [] as SkillUsageEvent[] })),
       ]);
       setData(ov);
       setRequests(req.items);
+      if (sk) {
+        setSkills(sk.skills);
+        setSkillCategories(Array.isArray(sk.categories) ? sk.categories : []);
+        if (sk.error) {
+          setError((prev) => prev || sk.error);
+        }
+      }
+      setSkillRecent(recent.items || []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+      setSkillsLoading(false);
     }
   }, [windowSec]);
 
@@ -119,7 +141,7 @@ export default function OverviewPage() {
     <div>
       <PageHeader
         title="Overview"
-        subtitle="各 proxy 吞吐、错误与登录态一屏扫读。数据每 15 秒刷新。"
+        subtitle="吞吐、错误、登录态与 Skills 用量。"
         action={
           <div className="flex flex-wrap items-center gap-2">
             <div
@@ -178,7 +200,7 @@ export default function OverviewPage() {
             <Kpi
               label="错误率"
               value={`${(data.kpi.error_rate * 100).toFixed(1)}%`}
-              hint="含 4xx/5xx"
+              hint="失败占比"
             />
             <Kpi
               label="平均延迟"
@@ -188,7 +210,7 @@ export default function OverviewPage() {
             <Kpi
               label="登录正常"
               value={`${data.kpi.services_online}/${data.kpi.services_total}`}
-              hint="auth_state = ok"
+              hint="登录态正常"
             />
           </Reveal>
 
@@ -245,8 +267,7 @@ export default function OverviewPage() {
                       近 {windowLabel}请求量
                     </h2>
                     <p className="mt-0.5 text-[12px] text-muted">
-                      {formatBucketHint(bucketSec, data.calendar_aligned)} · 柱高 = 请求数 · 红段 =
-                      失败
+                      {formatBucketHint(bucketSec, data.calendar_aligned)}
                     </p>
                   </div>
                   <div className="flex items-center gap-3 font-mono text-[11px] text-muted">
@@ -289,7 +310,7 @@ export default function OverviewPage() {
                 {requests.length === 0 ? (
                   <EmptyState
                     title="暂无请求"
-                    body="各 proxy 上报 ingest 后会出现在这里。"
+                    body="有流量后会出现在这里。"
                   />
                 ) : (
                   <ul className="max-h-[360px] overflow-y-auto divide-y divide-line">
@@ -333,6 +354,16 @@ export default function OverviewPage() {
           </div>
         </>
       ) : null}
+
+      {skillsLoading && skills.length === 0 ? (
+        <SkillsShowcaseSkeleton />
+      ) : (
+        <SkillsShowcase
+          skills={skills}
+          categories={skillCategories}
+          recent={skillRecent}
+        />
+      )}
 
       {selected ? (
         <RequestDrawer item={selected} onClose={() => setSelected(null)} />
@@ -552,20 +583,20 @@ function RequestDrawer({
         </dl>
 
         <section className="mt-5">
-          <h3 className="text-sm font-medium mb-2">输入 (request)</h3>
+          <h3 className="text-sm font-medium mb-2">输入</h3>
           {requestBody ? (
             <pre className="rounded-md border border-line bg-canvas p-3 text-[11px] font-mono overflow-x-auto text-ink whitespace-pre-wrap break-all">
               {JSON.stringify(requestBody, null, 2)}
             </pre>
           ) : (
             <p className="text-sm text-muted">
-              无请求体记录。新上报会写入截断后的输入；旧记录需重新请求后才会出现。
+              暂无输入记录。
             </p>
           )}
         </section>
 
         <section className="mt-5">
-          <h3 className="text-sm font-medium mb-2">输出 (response)</h3>
+          <h3 className="text-sm font-medium mb-2">输出</h3>
           {responseText ? (
             <div className="rounded-md border border-accent/30 bg-accent/5 p-3 text-sm whitespace-pre-wrap break-words mb-3">
               {responseText}
@@ -576,9 +607,7 @@ function RequestDrawer({
               {JSON.stringify(responseBody, null, 2)}
             </pre>
           ) : !responseText ? (
-            <p className="text-sm text-muted">
-              无响应内容。失败时通常只有 error 字段；成功请求会显示模型回复摘要。
-            </p>
+            <p className="text-sm text-muted">暂无输出记录。</p>
           ) : null}
         </section>
 

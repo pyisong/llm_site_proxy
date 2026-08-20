@@ -53,6 +53,20 @@ class SkillsApiTests(unittest.TestCase):
             r = client.get("/v1/skills/api-skill")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json()["name"], "api-skill")
+            self.assertNotIn("body", r.json())
+            self.assertNotIn("assets", r.json())
+
+            (skills_root / "api-skill" / "references" / "styles").mkdir(parents=True)
+            (skills_root / "api-skill" / "references" / "styles" / "quirky-sketch.md").write_text(
+                "quirky hand-drawn illustration\n",
+                encoding="utf-8",
+            )
+            r = client.get("/v1/skills/api-skill", params={"include_body": 1, "include_assets": 1})
+            self.assertEqual(r.status_code, 200)
+            payload = r.json()
+            self.assertIn("# api-skill", payload.get("body") or "")
+            paths = [a.get("path") for a in (payload.get("assets") or [])]
+            self.assertIn("references/styles/quirky-sketch.md", paths)
 
             r = client.post(
                 "/v1/skills/install",
